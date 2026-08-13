@@ -145,6 +145,25 @@ segmented per-tick update is the cheap common path.
 
 ## Commands
 
+### How to name a node (`<node>` in every command below)
+
+The canonical node id is `<channel>-<thread_ts>` — correct, stable, and
+**unusable by hand**. So every command that takes a `<node>` resolves it from
+any of these, in order:
+
+1. **Path alias** — `1`, `1.a`, `1.a.ii`, derived from each node's position
+   among its siblings in `tree.json`. This is the primary human handle and the
+   one `tree` prints. Aliases are *positional, not stored*: recomputed on every
+   render, so they are only valid within a project.
+2. **Unique title substring** — `tree 慢查询`.
+3. **Full or prefix node id** — `C0PAY-1699.0042`, for scripts and logs.
+
+Ambiguous → refuse and print the candidates. Never guess which node the user
+meant; acting on the wrong node silently corrupts the tree.
+
+Path aliases are stable enough for a work session but **shift if a sibling is
+inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
+
 ### Local CLI — `/canopy <cmd>` (A君 → the agent)
 
 - `track <slackThreadLink>` — **main entrypoint.** Create the root node +
@@ -153,7 +172,11 @@ segmented per-tick update is the cheap common path.
 - `agents` — enter profile-edit mode: create / edit / delete global
   `profiles/*.md`.
 - `tree` / `status` — print the tree with each node's status / owner / lock
-  state. No arg → list all tracked projects; with a projId → one tree.
+  state. No arg → list all tracked projects; with a projId → that whole tree;
+  **with a node ref → only the subtree rooted at that node** (plus a one-line
+  breadcrumb of its ancestors, so you never lose your place). `--depth N` caps
+  how deep it prints. Deep trees are the normal case — printing the whole thing
+  is the exception, not the default view.
 - `pause <node>` / `resume <node>` — stop / restart watching a node.
 - `recalibrate <node>` — CLI form of Loop C.
 - `canvas` — force-regenerate and print the Canvas link.
