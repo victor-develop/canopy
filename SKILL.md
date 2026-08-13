@@ -154,12 +154,17 @@ any of these, in order:
 1. **Path alias** — `1`, `1.a`, `1.a.ii`, derived from each node's position
    among its siblings in `tree.json`. This is the primary human handle and the
    one `tree` prints. Aliases are *positional, not stored*: recomputed on every
-   render, so they are only valid within a project.
+   render.
 2. **Unique title substring** — `tree 慢查询`.
 3. **Full or prefix node id** — `C0PAY-1699.0042`, for scripts and logs.
 
-Ambiguous → refuse and print the candidates. Never guess which node the user
-meant; acting on the wrong node silently corrupts the tree.
+A path alias is only meaningful **inside one project**, but the CLI is global —
+you normally have a few roots tracked at once. So a node ref may be qualified
+`<projId>:<alias>` (`pay-timeout:1.a`), and a bare alias resolves only if it hits
+exactly one node across all tracked projects.
+
+Ambiguous → refuse and print the candidates, qualified. Never guess which node
+the user meant; acting on the wrong node silently corrupts the tree.
 
 Path aliases are stable enough for a work session but **shift if a sibling is
 inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
@@ -171,12 +176,20 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
   register the cron job, build the Canvas.
 - `agents` — enter profile-edit mode: create / edit / delete global
   `profiles/*.md`.
-- `tree` / `status` — print the tree with each node's status / owner / lock
-  state. No arg → list all tracked projects; with a projId → that whole tree;
-  **with a node ref → only the subtree rooted at that node** (plus a one-line
-  breadcrumb of its ancestors, so you never lose your place). `--depth N` caps
-  how deep it prints. Deep trees are the normal case — printing the whole thing
-  is the exception, not the default view.
+- `tree` / `status` — print status / owner / lock state, at one of three zoom
+  levels. A project has exactly one root, so **projId is just the human name for
+  that root**.
+  - **no arg → the root list.** One line per tracked project: root title, its
+    projId, and a rollup of the tree under it (`active` / `paused` / `done`
+    counts, plus how many nodes currently hold a lock). Expect a handful of
+    roots, so this is the daily dashboard — it does **not** expand the trees.
+  - **projId → that whole tree.**
+  - **node ref → only the subtree rooted at that node**, plus a one-line
+    breadcrumb of its ancestors so you never lose your place.
+
+  `--depth N` caps how deep it prints at either of the latter two. Deep trees
+  are the normal case — printing one whole tree is already a zoom-in, and
+  printing every tree at once is not a view Canopy offers.
 - `pause <node>` / `resume <node>` — stop / restart watching a node.
 - `recalibrate <node>` — CLI form of Loop C.
 - `canvas` — force-regenerate and print the Canvas link.
