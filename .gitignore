@@ -1,0 +1,6 @@
+# Canopy is a skill repo — runtime data must NEVER live here.
+# All state goes to $CANOPY_DATA_HOME (default ~/.canopy/).
+.canopy/
+*.log
+__pycache__/
+.DS_Store
