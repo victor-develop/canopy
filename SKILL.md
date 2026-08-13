@@ -77,14 +77,17 @@ skill-root/                      # git, READ-ONLY at runtime, PR-able
   scripts/                       # cron-tick, reply tool, summarizer wrappers, entrypoints
   templates/
     profiles/*.md                # seed profiles (copied out on first use)
+    messages/*.md                # seed Slack message templates (copied out on first use)
     default-summarizer.md        # default feed prompt
     canvas.tmpl
 
 $CANOPY_DATA_HOME  (default ~/.canopy/)   # per-user, NOT in the repo
   config.json                    # cron interval, slack token ref, data path
   profiles/<agent>.md            # the user's real, editable global agents
+  messages/*.md                  # the user's real, editable message templates
   projects/<projId>/             # one per `track`
     tree.json
+    messages/*.md                # optional per-project overrides
     nodes/<channel>-<thread_ts>/
       state.json
       guide.md                   # summarizer guidance, append-only
@@ -94,9 +97,10 @@ $CANOPY_DATA_HOME  (default ~/.canopy/)   # per-user, NOT in the repo
 
 Scripts resolve data via `$CANOPY_DATA_HOME` (default `~/.canopy/`), overridable
 per-project with `--data-dir` (e.g. to sync/back up via a git-ignored folder).
-On first `track`/`agents`, if `profiles/` is empty, **copy the seeds** from
-`templates/profiles/` into the data home. From then on the user edits their copy;
-skill updates refresh the templates without clobbering user profiles.
+On first `track`/`agents`/`messages`, if `profiles/` or `messages/` is empty,
+**copy the seeds** from `templates/profiles/` and `templates/messages/` into the
+data home. From then on the user edits their copy; skill updates refresh the
+templates without clobbering the user's profiles or wording.
 
 Profiles are **global** (shared across all projects). Reply identity is chosen
 **per node** (`reply_as`), so 1.a can answer as `@arch` while 1.b answers as
@@ -143,6 +147,50 @@ an intermediate note to avoid context blowup — then rebuilds every segment and
 overwrites the whole feed in one pass. This is the heavy escape hatch; the
 segmented per-tick update is the cheap common path.
 
+## Message templates — every byte Canopy posts to Slack
+
+Observers never read `tree.json` or the Canvas source; they read the messages
+Canopy posts. Those messages are the product, so **none of their wording is
+hardcoded**. Every posting moment renders a template, and every template is
+user-editable and PR-able.
+
+| Moment | Template | Posted where |
+|---|---|---|
+| `track` | `feed-root.md` | channel — root checkpoint message |
+| `fork` | `feed-fork.md` | channel — child checkpoint message |
+| summarizer appends a checkpoint | `feed-entry.md` | one entry inside the live segment |
+| active segment fills | `feed-segment.md` | header of the new segment |
+| …and the old one is sealed | `feed-sealed-footer.md` | pointer stamped onto the sealed segment |
+| worker replies in-thread (Loop A) | `reply.md` | the node's thread |
+| `return` | `return-draft.md` | new message, for A君's review only |
+| `ack return` | `return-post.md` | the **parent** thread |
+| `done` / `pause` / `untrack` | `status-change.md` | the node's feed |
+
+`guide:` gets an emoji reaction, not a message — steering the summarizer should
+not add noise to the thread everyone is reading.
+
+Each template file is **front matter + body**: `moment` names the posting moment,
+`vars` declares exactly which variables that moment provides, and the body is
+Slack mrkdwn. Rendering is variable substitution only — no logic, no arithmetic
+(hence `prev_segment_index` is passed in rather than computed).
+
+A body referencing a variable not in its `vars` is a **hard error at render
+time**, and the post is abandoned: better a failed tick in your log than
+`{{parent_permalink}}` posted verbatim into the channel your VP is reading. A
+declared variable that is legitimately empty (`reason`, or `entries` on a fresh
+feed) renders as nothing.
+
+Resolution is layered, first hit wins:
+
+```
+projects/<projId>/messages/<name>    # this project only  (rare, e.g. a formal exec-facing tree)
+$CANOPY_DATA_HOME/messages/<name>    # the user's edits    (the normal place to customize)
+skill-root/templates/messages/<name> # shipped default     (read-only)
+```
+
+Same rule as profiles: seeds are **copied out on first `track`**, so a skill
+update refreshes the shipped defaults without clobbering your wording.
+
 ## Commands
 
 ### How to name a node (`<node>` in every command below)
@@ -176,20 +224,38 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
   register the cron job, build the Canvas.
 - `agents` — enter profile-edit mode: create / edit / delete global
   `profiles/*.md`.
-- `tree` / `status` — print status / owner / lock state, at one of three zoom
-  levels. A project has exactly one root, so **projId is just the human name for
+- `messages` — review and edit the message templates above. No arg → list every
+  template with **which layer it resolved from** (shipped / user / project), so
+  you can see at a glance what you have already customized. `messages <name>`
+  opens that one for editing. `messages <name> --preview [<node>]` renders it
+  against a real node's state (or a seed fixture when no node is given) and
+  prints the exact text Slack would receive — **it posts nothing**. Preview
+  before `track`, not after your VP has read it.
+- `tree` / `status` — print status / owner / lock state. Two **orthogonal**
+  parameters: the argument picks *where to start*, `--depth` picks *how far
+  down*. A project has exactly one root, so **projId is just the human name for
   that root**.
-  - **no arg → the root list.** One line per tracked project: root title, its
-    projId, and a rollup of the tree under it (`active` / `paused` / `done`
-    counts, plus how many nodes currently hold a lock). Expect a handful of
-    roots, so this is the daily dashboard — it does **not** expand the trees.
-  - **projId → that whole tree.**
-  - **node ref → only the subtree rooted at that node**, plus a one-line
-    breadcrumb of its ancestors so you never lose your place.
 
-  `--depth N` caps how deep it prints at either of the latter two. Deep trees
-  are the normal case — printing one whole tree is already a zoom-in, and
-  printing every tree at once is not a view Canopy offers.
+  Where to start:
+  - no arg → every tracked root
+  - projId → that root
+  - node ref → that node, plus a one-line breadcrumb of its ancestors so you
+    never lose your place
+
+  How deep — `--depth`, counted from wherever you started:
+  - `0` → starting node(s) only, each as a single rollup line: title, its
+    projId/alias, and counts of `active` / `paused` / `done` descendants plus how
+    many currently hold a lock. **Default for the no-arg form** — a handful of
+    roots, nothing expanded: the daily dashboard.
+  - `N` → expand N levels; anything deeper collapses into a rollup on its
+    deepest visible ancestor.
+  - `all` → no cap. **Default once you name a projId or node** — you already
+    zoomed in, so expansion is what you asked for.
+
+  A collapsed line always carries its rollup counts, so a truncated branch is
+  visibly truncated and you can re-run one level deeper. Deep trees are the
+  normal case; the depth cap is what stops Canopy from re-creating the drowning
+  problem it exists to solve.
 - `pause <node>` / `resume <node>` — stop / restart watching a node.
 - `recalibrate <node>` — CLI form of Loop C.
 - `canvas` — force-regenerate and print the Canvas link.
