@@ -221,6 +221,14 @@ def _status_cmd(args, status):
     return 0
 
 
+def cmd_rename(args):
+    ctx = _ctx(args)
+    proj_id, nid = _resolve(ctx, args.ref)
+    result = ops.rename(ctx, proj_id, nid, args.title)
+    print("%s -> %s" % (nid, result["title"]))
+    return 0
+
+
 def cmd_recalibrate(args):
     ctx = _ctx(args)
     proj_id, nid = _resolve(ctx, args.ref)
@@ -338,6 +346,11 @@ def build_parser():
         p.add_argument("ref")
         p.add_argument("--reason", default="")
         p.set_defaults(func=func)
+
+    p = sub.add_parser("rename", help="retitle a node (tree, state, feed headers)")
+    p.add_argument("ref")
+    p.add_argument("title")
+    p.set_defaults(func=cmd_rename)
 
     p = sub.add_parser("recalibrate", help="rebuild a node's feed")
     p.add_argument("ref")

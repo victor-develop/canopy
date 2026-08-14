@@ -11,6 +11,7 @@ DEFAULTS = {
     # Filled in by `track`: cron's PATH does not include mise/nvm/asdf shims.
     "runner_path": None,
     "slack_workspace_url": None,
+    "slack_backend": "slackcli",   # or "api", which needs $slack_token_env
     "slack_token_env": "CANOPY_SLACK_TOKEN",
     "runner_timeout_seconds": 900,
     "shortid_timeout_seconds": 90,

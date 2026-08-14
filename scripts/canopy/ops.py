@@ -19,8 +19,8 @@ class Ctx(object):
     def __init__(self, dh, cfg=None, slack=None, root=None, now=None):
         self.dh = Path(dh)
         self.cfg = cfg if cfg is not None else config_mod.load(self.dh)
-        self.slack = slack if slack is not None else slack_mod.Slack(
-            workspace=self.cfg.get("slack_workspace"))
+        self.slack = slack if slack is not None else slack_mod.Slack.from_config(
+            self.cfg)
         self.root = root
         self._now = now
 
@@ -380,6 +380,36 @@ def set_status(ctx, proj_id, nid, status, reason="", agent=None):
         ts = ctx.slack.post(state["channel"], text,
                             thread_ts=state["feed_ts"][-1])
     return {"status": status, "ts": ts}
+
+
+def rename(ctx, proj_id, nid, title):
+    """Retitle a node everywhere it already got written.
+
+    `track` derives a title from the thread's first line, which is a guess —
+    often a truncated sentence. Fixing it has to reach three places: the tree,
+    the node state, and the feed segment headers that were rendered from the old
+    one. Missing any of them leaves two names for one problem.
+    """
+    tree = ctx.tree(proj_id)
+    state = store.load_state(ctx.dh, proj_id, nid)
+    tree.nodes[nid]["title"] = title
+    tree.save()
+    state["title"] = title
+    store.save_state(ctx.dh, proj_id, state)
+
+    node_dir = ctx.node_dir(proj_id, nid)
+    segments = feed_mod.load_segments(node_dir)
+    feed = ctx.feed(proj_id, state, tree)
+    for segment in segments:
+        if "title" in (segment.get("vars") or {}):
+            segment["vars"]["title"] = title
+        ctx.slack.update(state["channel"], segment["ts"],
+                         feed.render_segment(segment))
+    if segments:
+        feed_mod.save_segments(node_dir, segments)
+
+    sync_treemap(ctx, tree)
+    return {"node_id": nid, "title": title, "segments": len(segments)}
 
 
 def reply(ctx, proj_id, nid, body, agent=None):

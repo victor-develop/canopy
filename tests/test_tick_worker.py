@@ -152,3 +152,29 @@ def test_classify_prefers_a_command_over_a_question():
 def test_classify_falls_through_to_chatter():
     kind, _ = worker.classify([{"ts": "1", "user": "U", "text": "hi"}], ["canopy"])
     assert kind == "chatter"
+
+
+def test_canopys_own_reply_does_not_wake_a_worker(ctx, slack, tracked):
+    """Otherwise every reply costs a summarizer reading Canopy's own words."""
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "UBOT", "*[canopy]* 我查了下日志")
+    results = tick_mod.tick(ctx, handle=no_llm)
+    assert results[0]["verdict"] == "self-only"
+    assert state_of(ctx, tracked)["cursor"] == "1700001000.000100"
+
+
+def test_a_real_message_after_canopys_own_still_gets_handled(ctx, slack, tracked):
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "UBOT", "*[canopy]* 我查了下日志")
+    add_msg(slack, state, "1700001001.000100", "U2", "那就先加索引")
+    seen = {}
+
+    def fake_run(cfg, prompt, node_dir, out_file=None):
+        seen["prompt"] = prompt
+        return "决定先加索引"
+
+    results = tick_mod.tick(ctx, run=fake_run)
+    assert results[0]["verdict"] == "work"
+    assert "那就先加索引" in seen["prompt"]
+    assert "我查了下日志" not in seen["prompt"]      # its own post is filtered out
+    assert state_of(ctx, tracked)["cursor"] == "1700001001.000100"

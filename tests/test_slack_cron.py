@@ -114,3 +114,53 @@ def test_uninstall_keeps_other_jobs():
 def test_empty_crontab_exit_code_is_not_an_error():
     run, _ = recorder([(1, "")])
     assert cron.read_crontab(run=run) == ""
+
+
+# -- link degradation and the API backend -------------------------------------
+
+def test_slackcli_edits_lose_rich_links_so_they_degrade():
+    """slackcli's edit HTML-escapes the text; `&lt;url|label&gt;` is a dead link."""
+    run, calls = recorder([(0, "")])
+    Slack(run=run).update("C1", "1.0", "见 <https://x/p1|thread> 吧")
+    sent = calls[0][0][calls[0][0].index("--message") + 1]
+    assert sent == "见 thread https://x/p1 吧"
+
+
+def test_slackcli_posts_keep_rich_links():
+    run, calls = recorder([(0, '{"ts": "1.0"}')])
+    Slack(run=run).post("C1", "见 <https://x/p1|thread>")
+    sent = calls[0][0][calls[0][0].index("--message") + 1]
+    assert sent == "见 <https://x/p1|thread>"
+
+
+def test_api_backend_keeps_rich_links_on_edit():
+    seen = {}
+
+    def http(url, data, token):
+        seen.update(url=url, data=data, token=token)
+        return '{"ok": true, "ts": "1.0"}'
+
+    Slack(backend="api", token="xoxp-test", http=http).update(
+        "C1", "1.0", "见 <https://x/p1|thread>")
+    assert seen["url"].endswith("chat.update")
+    assert seen["data"]["text"] == "见 <https://x/p1|thread>"
+
+
+def test_api_backend_reports_slack_errors():
+    def http(url, data, token):
+        return '{"ok": false, "error": "message_not_found"}'
+    with pytest.raises(SlackError) as exc:
+        Slack(backend="api", token="t", http=http).update("C1", "1.0", "x")
+    assert "message_not_found" in str(exc.value)
+
+
+def test_api_backend_refuses_without_a_token(monkeypatch):
+    monkeypatch.delenv("CANOPY_SLACK_TOKEN", raising=False)
+    with pytest.raises(SlackError) as exc:
+        Slack.from_config({"slack_backend": "api"})
+    # Names the env var; never reads a token from a file.
+    assert "CANOPY_SLACK_TOKEN" in str(exc.value)
+
+
+def test_from_config_defaults_to_slackcli():
+    assert Slack.from_config({}).backend == "slackcli"

@@ -163,3 +163,21 @@ def test_tracking_the_same_thread_twice_is_refused(ctx, tracked):
     with pytest.raises(ValueError) as exc:
         ops.track(ctx, link, proj_id="another-name")
     assert "already tracked" in str(exc.value)
+
+
+def test_rename_reaches_the_tree_the_state_and_the_feed(ctx, slack, tracked):
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    ops.rename(ctx, proj_id, nid, "支付超时:重试风暴")
+
+    assert ctx.tree(proj_id).node(nid)["title"] == "支付超时:重试风暴"
+    assert store.load_state(ctx.dh, proj_id, nid)["title"] == "支付超时:重试风暴"
+    assert "支付超时:重试风暴" in slack.text_of(tracked["feed_ts"])
+    map_ts = ctx.tree(proj_id).data["tree_msgs"][0]["ts"]
+    assert "支付超时:重试风暴" in slack.text_of(map_ts)
+
+
+def test_rename_keeps_the_checkpoints_already_recorded(ctx, slack, tracked):
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    ops.append_checkpoint(ctx, proj_id, nid, "决定加索引")
+    ops.rename(ctx, proj_id, nid, "新标题")
+    assert "决定加索引" in slack.text_of(tracked["feed_ts"])

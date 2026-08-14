@@ -89,3 +89,15 @@ def test_inventory_reports_layers(dh, repo):
     names = [r[0] for r in rows]
     assert "feed-root.md" in names
     assert all(layer == templates.LAYER_SHIPPED for _n, layer, _p in rows)
+
+
+def test_empty_link_degrades_to_its_label():
+    """`<{{url}}|看整棵树>` with no url must not post as literal `<|看整棵树>`."""
+    body = """---
+moment: x
+vars: [url]
+---
+a <{{url}}|看整棵树> b
+"""
+    assert templates.render(body, {}) == "a 看整棵树 b"
+    assert templates.render(body, {"url": "#x"}) == "a <#x|看整棵树> b"

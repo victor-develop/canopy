@@ -1,34 +1,85 @@
 """The only place Canopy talks to Slack.
 
-Everything goes through `slackcli` as a subprocess: it already holds the
-workspace credential, so Canopy never handles a token itself. The command
-runner is injectable, which is also how the tests drive every path here without
-a network.
+Two backends, same interface:
+
+- **slackcli** (default) shells out to the CLI that already holds the workspace
+  credential, so Canopy never handles a token. One catch, found the hard way:
+  `slackcli messages edit` HTML-escapes the text, so `<url|label>` arrives as
+  `&lt;url|label&gt;` and the link is dead. Since the feed is updated in place
+  on every checkpoint, this backend degrades rich links to bare URLs — ugly, but
+  clickable, which is the part that matters.
+- **api** posts straight to the Slack Web API with a user token read from the
+  environment variable named in `config.json` (`slack_token_env`). Canopy never
+  reads a token from a file and never logs one. Rich links survive edits here.
 
 Posting always happens through this module, never with the user's own identity
 implied — callers render an identity-prefixed template first (`[canopy]: …`).
 """
 
 import json
+import os
 import re
 import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
 
 from .errors import SlackError
 
 TS_RE = re.compile(r"\b(\d{10}\.\d{4,6})\b")
+LINK_RE = re.compile(r"<(https?://[^|>\s]+)\|([^>]*)>")
+API_BASE = "https://slack.com/api/"
 
 
-def _run(args):
-    proc = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    return proc.returncode, proc.stdout.decode("utf-8", "replace"), \
-        proc.stderr.decode("utf-8", "replace")
+def degrade_links(text):
+    """`<url|label>` -> `label url`. For backends that escape angle brackets."""
+    return LINK_RE.sub(lambda m: "%s %s" % (m.group(2).strip(), m.group(1)), text or "")
+
+
+def _run(argv):
+    proc = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return (proc.returncode,
+            proc.stdout.decode("utf-8", "replace"),
+            proc.stderr.decode("utf-8", "replace"))
+
+
+def _http(url, data, token):
+    body = urllib.parse.urlencode(data).encode("utf-8")
+    req = urllib.request.Request(url, data=body, headers={
+        "Authorization": "Bearer %s" % token,
+        "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.read().decode("utf-8", "replace")
+    except urllib.error.URLError as exc:
+        raise SlackError("Slack API call failed: %s" % (exc,))
 
 
 class Slack(object):
-    def __init__(self, cli="slackcli", run=None, workspace=None):
+    def __init__(self, cli="slackcli", run=None, workspace=None, backend="slackcli",
+                 token=None, http=None):
         self.cli = cli
         self.run = run or _run
         self.workspace = workspace
+        self.backend = backend
+        self.token = token
+        self.http = http or _http
+
+    @classmethod
+    def from_config(cls, cfg, **kwargs):
+        backend = cfg.get("slack_backend", "slackcli")
+        token = None
+        if backend == "api":
+            env_name = cfg.get("slack_token_env") or "CANOPY_SLACK_TOKEN"
+            token = os.environ.get(env_name)
+            if not token:
+                raise SlackError(
+                    "slack_backend is \"api\" but $%s is not set. Export the "
+                    "token in the environment cron runs with, or switch "
+                    "slack_backend back to \"slackcli\"." % (env_name,))
+        return cls(workspace=cfg.get("slack_workspace"), backend=backend,
+                   token=token, **kwargs)
 
     # -- plumbing ---------------------------------------------------------
 
@@ -38,8 +89,22 @@ class Slack(object):
             argv += ["--workspace", self.workspace]
         code, out, err = self.run(argv)
         if code != 0:
-            raise SlackError("slackcli failed (%s): %s" % (" ".join(argv), err.strip() or out.strip()))
+            raise SlackError("slackcli failed (%s): %s"
+                             % (" ".join(argv), err.strip() or out.strip()))
         return out
+
+    def _api(self, method, **params):
+        payload = self.http(API_BASE + method,
+                            dict((k, v) for k, v in params.items() if v is not None),
+                            self.token)
+        try:
+            data = json.loads(payload)
+        except ValueError:
+            raise SlackError("Slack API returned non-JSON: %s" % (payload[:200],))
+        if not data.get("ok"):
+            raise SlackError("Slack API %s failed: %s"
+                             % (method, data.get("error", "unknown")))
+        return data
 
     @staticmethod
     def _messages(payload):
@@ -83,9 +148,18 @@ class Slack(object):
         raise SlackError("could not read a message ts back from slackcli: %r"
                          % ((payload or "")[:200],))
 
+    def _text_for(self, text, editing=False):
+        if self.backend == "slackcli" and editing:
+            return degrade_links(text)
+        return text
+
     # -- reads ------------------------------------------------------------
 
     def thread(self, channel, thread_ts, oldest=None, limit=200):
+        if self.backend == "api":
+            data = self._api("conversations.replies", channel=channel, ts=thread_ts,
+                             oldest=oldest, limit=limit)
+            return self._messages(json.dumps(data.get("messages", [])))
         args = ["conversations", "read", channel, "--thread-ts", thread_ts,
                 "--json", "--limit", str(limit)]
         if oldest:
@@ -104,17 +178,29 @@ class Slack(object):
     # -- writes -----------------------------------------------------------
 
     def post(self, channel, text, thread_ts=None):
+        text = self._text_for(text)
+        if self.backend == "api":
+            data = self._api("chat.postMessage", channel=channel, text=text,
+                             thread_ts=thread_ts)
+            return str(data["ts"])
         args = ["messages", "send", "--recipient-id", channel, "--message", text]
         if thread_ts:
             args += ["--thread-ts", thread_ts]
         return self._ts_from(self._call(*args))
 
     def update(self, channel, ts, text):
+        text = self._text_for(text, editing=True)
+        if self.backend == "api":
+            self._api("chat.update", channel=channel, ts=ts, text=text)
+            return ts
         self._call("messages", "edit", "--channel-id", channel,
                    "--timestamp", ts, "--message", text)
         return ts
 
     def react(self, channel, ts, emoji):
+        if self.backend == "api":
+            self._api("reactions.add", channel=channel, timestamp=ts, name=emoji)
+            return True
         self._call("messages", "react", "--channel-id", channel,
                    "--timestamp", ts, "--emoji", emoji)
         return True

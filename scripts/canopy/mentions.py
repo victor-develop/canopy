@@ -26,6 +26,19 @@ def mentioned_agents(text, agents):
     return [agent for _pos, agent in found]
 
 
+def is_own_post(text, agents):
+    """Did Canopy write this? Its replies are identity-prefixed `*[agent]*`.
+
+    Without this, every reply the tick posts shows up as a new message on the
+    next tick and pays for a summarizer to read Canopy's own words back.
+    """
+    head = (text or "").lstrip()
+    for agent in agents:
+        if head.startswith("*[%s]*" % agent) or head.startswith("[%s]" % agent):
+            return True
+    return False
+
+
 def parse(text, agent):
     """-> (command, argument) or (None, None).
 
