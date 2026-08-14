@@ -44,8 +44,12 @@ def cmd_track(args):
                        locale=args.locale, proj_id=args.project)
     if not args.no_cron:
         try:
-            path = runner_mod.resolve_path(ctx.cfg.get("runner", "codex"))
-            config_mod.set_values(ctx.dh, runner_path=path)
+            config_mod.set_values(
+                ctx.dh,
+                runner_path=runner_mod.resolve_path(ctx.cfg.get("runner", "codex")),
+                slack_cli_path=runner_mod.resolve_path(
+                    ctx.cfg.get("slack_cli", "slackcli")),
+            )
         except CanopyError as exc:
             raise CanopyError(
                 "%s\nNo cron job was registered — a tree that looks watched but "
@@ -268,8 +272,23 @@ def cmd_reply(args):
 
 
 def cmd_tick(args):
+    """One tick. Always leaves a line in tick.log — including when it dies.
+
+    cron mails a traceback to a local mailbox nobody reads; the first real bug
+    here (slackcli missing from cron's PATH) sat in that mailbox through several
+    ticks. A log next to the state is where someone will actually look.
+    """
     ctx = _ctx(args)
-    results = tick_mod.tick(ctx)
+    try:
+        results = tick_mod.tick(ctx)
+    except Exception as exc:
+        _log_tick(ctx.dh, "ERROR %s: %s" % (type(exc).__name__, exc))
+        raise
+    summary = {}
+    for row in results:
+        summary[row.get("verdict")] = summary.get(row.get("verdict"), 0) + 1
+    _log_tick(ctx.dh, " ".join("%s=%d" % kv for kv in sorted(summary.items()))
+              or "nothing tracked")
     if args.json:
         print(json.dumps(results, ensure_ascii=False))
     else:
@@ -277,6 +296,13 @@ def cmd_tick(args):
             print("%-20s %-28s %s" % (row.get("project"), row.get("node"),
                                       row.get("verdict")))
     return 0
+
+
+def _log_tick(dh, message):
+    import time as _time
+    line = "%s %s\n" % (_time.strftime("%Y-%m-%d %H:%M:%S"), message)
+    with (Path(dh) / "tick.log").open("a", encoding="utf-8") as fh:
+        fh.write(line)
 
 
 def cmd_config(args):

@@ -78,8 +78,11 @@ class Slack(object):
                     "slack_backend is \"api\" but $%s is not set. Export the "
                     "token in the environment cron runs with, or switch "
                     "slack_backend back to \"slackcli\"." % (env_name,))
-        return cls(workspace=cfg.get("slack_workspace"), backend=backend,
-                   token=token, **kwargs)
+        # cron has no shell profile, so a PATH lookup for `slackcli` fails
+        # there even though it works in a terminal. Use the resolved path.
+        cli = cfg.get("slack_cli_path") or cfg.get("slack_cli") or "slackcli"
+        return cls(cli=cli, workspace=cfg.get("slack_workspace"),
+                   backend=backend, token=token, **kwargs)
 
     # -- plumbing ---------------------------------------------------------
 

@@ -212,3 +212,24 @@ def test_messages_on_a_fresh_install_seeds(cli_env, capsys):
     run(["messages"])
     out = capsys.readouterr().out
     assert "feed-root.md" in out and "user" in out
+
+
+def test_tick_writes_a_log_line(cli_env, capsys):
+    track_one(cli_env)
+    run(["tick"])
+    log = (cli_env["dh"] / "tick.log").read_text(encoding="utf-8")
+    assert "no-new=1" in log
+
+
+def test_tick_logs_the_failure_too(cli_env, monkeypatch, capsys):
+    """The first real cron bug sat unread in a local mailbox for several ticks."""
+    track_one(cli_env)
+
+    def boom(*a, **k):
+        raise RuntimeError("slackcli missing")
+
+    monkeypatch.setattr(cli.tick_mod, "tick", boom)
+    with pytest.raises(RuntimeError):
+        run(["tick"])
+    log = (cli_env["dh"] / "tick.log").read_text(encoding="utf-8")
+    assert "ERROR RuntimeError: slackcli missing" in log

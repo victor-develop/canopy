@@ -10,6 +10,9 @@ DEFAULTS = {
     "runner": "codex",
     # Filled in by `track`: cron's PATH does not include mise/nvm/asdf shims.
     "runner_path": None,
+    # Same reason as runner_path: cron's PATH has neither of these.
+    "slack_cli": "slackcli",
+    "slack_cli_path": None,
     "slack_workspace_url": None,
     "slack_backend": "slackcli",   # or "api", which needs $slack_token_env
     "slack_token_env": "CANOPY_SLACK_TOKEN",
