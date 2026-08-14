@@ -54,10 +54,15 @@ $ /canopy messages feed-root --preview
                                      渲染出 Slack 会收到的原文。不发。
 ```
 
+Canopy 不带任何内置 agent —— `templates/profiles/` 里只有一个占位的 `example.md`,
+首次 `track` / `agents` 时复制到 `~/.canopy/profiles/`。下面图里的 `@arch`、`@qa`
+就是这一步自己写的,名字随便起;哪个节点用哪个身份回话,看该节点 `state.json` 里的
+`reply_as`。
+
 ### 1 · `track`:接管一条正在吵的 thread
 
 ```
-$ /canopy track https://…/archives/C0PAY/p1699000001 --locale zh
+$ /canopy track https://…/archives/C0PAY/p1699000001     # locale 默认 zh
 
   #pay ────────────────────────────────────────────────────────────────
    🧵 1699.0001  “支付超时”                   原始讨论,一个字不动
@@ -71,6 +76,9 @@ $ /canopy track https://…/archives/C0PAY/p1699000001 --locale zh
 往 thread 里 announce 这一步不是客套:少了它,feed 建起来了,但正在那条 thread 里吵的人
 不知道有这回事,A君只能挨个手动贴链接。它同时是 `fork` 和 `guide:` 的入口提示 —— 除了
 A君,别人就是从这条消息知道有这些命令。
+
+盯英文 thread 就加 `--locale en`。locale 只管 Canopy 自己发的那层框架文案,checkpoint
+摘要是 summarizer 写的,thread 说什么语言它就跟着什么语言。
 
 ### 2 · 每 N 分钟一次 tick,平时没人看见
 

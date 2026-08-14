@@ -77,7 +77,7 @@ skill-root/                      # git, READ-ONLY at runtime, PR-able
   scripts/                       # cron-tick, reply tool, summarizer wrappers, entrypoints
   templates/
     profiles/*.md                # seed profiles (copied out on first use)
-    messages/<locale>/*.md       # seed Slack message templates, per language (en, zh)
+    messages/<locale>/*.md       # seed Slack message templates, per language (zh, en)
     default-summarizer.md        # default feed prompt
     canvas.tmpl
 
@@ -192,10 +192,10 @@ checkpoint entries carry the content, the frame around them should disappear.
 
 ### Locale
 
-Templates ship per language under `messages/<locale>/`, currently `en` and `zh`.
-`config.json` sets `"locale"` (default `en`), overridable per project at `track`
-time with `--locale`, because one person often tracks an English infra thread and
-a Chinese product thread from the same machine.
+Templates ship per language under `messages/<locale>/`, currently `zh` and `en`.
+`config.json` sets `"locale"` (**default `zh`**), overridable per project at
+`track` time with `--locale`, because one person often tracks a Chinese product
+thread and an English infra thread from the same machine.
 
 Only the *frame* is localized. Checkpoint summaries come from the summarizer, so
 they follow whatever language the thread is speaking — which is exactly why the
