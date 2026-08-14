@@ -4,10 +4,12 @@ Two backends, same interface:
 
 - **slackcli** (default) shells out to the CLI that already holds the workspace
   credential, so Canopy never handles a token. One catch, found the hard way:
-  `slackcli messages edit` HTML-escapes the text, so `<url|label>` arrives as
-  `&lt;url|label&gt;` and the link is dead. Since the feed is updated in place
-  on every checkpoint, this backend degrades rich links to bare URLs — ugly, but
-  clickable, which is the part that matters.
+  upstream slackcli (<= 0.8.0) omits `parse=none` on `chat.update`, so Slack
+  escapes the text and `<url|label>` is stored as `&lt;url|label&gt;` — a dead
+  link. Since the feed is updated in place on every checkpoint, that breaks
+  every link in it. With such a CLI, set `slack_cli_escapes_on_edit: true` and
+  this backend degrades rich links to bare URLs: ugly, but clickable. With a
+  patched CLI, set it false and keep the labels.
 - **api** posts straight to the Slack Web API with a user token read from the
   environment variable named in `config.json` (`slack_token_env`). Canopy never
   reads a token from a file and never logs one. Rich links survive edits here.
@@ -58,13 +60,14 @@ def _http(url, data, token):
 
 class Slack(object):
     def __init__(self, cli="slackcli", run=None, workspace=None, backend="slackcli",
-                 token=None, http=None):
+                 token=None, http=None, escapes_on_edit=True):
         self.cli = cli
         self.run = run or _run
         self.workspace = workspace
         self.backend = backend
         self.token = token
         self.http = http or _http
+        self.escapes_on_edit = escapes_on_edit
 
     @classmethod
     def from_config(cls, cfg, **kwargs):
@@ -82,7 +85,9 @@ class Slack(object):
         # there even though it works in a terminal. Use the resolved path.
         cli = cfg.get("slack_cli_path") or cfg.get("slack_cli") or "slackcli"
         return cls(cli=cli, workspace=cfg.get("slack_workspace"),
-                   backend=backend, token=token, **kwargs)
+                   backend=backend, token=token,
+                   escapes_on_edit=bool(cfg.get("slack_cli_escapes_on_edit", True)),
+                   **kwargs)
 
     # -- plumbing ---------------------------------------------------------
 
@@ -152,7 +157,7 @@ class Slack(object):
                          % ((payload or "")[:200],))
 
     def _text_for(self, text, editing=False):
-        if self.backend == "slackcli" and editing:
+        if self.backend == "slackcli" and editing and self.escapes_on_edit:
             return degrade_links(text)
         return text
 

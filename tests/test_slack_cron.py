@@ -164,3 +164,16 @@ def test_api_backend_refuses_without_a_token(monkeypatch):
 
 def test_from_config_defaults_to_slackcli():
     assert Slack.from_config({}).backend == "slackcli"
+
+
+def test_a_patched_slackcli_keeps_labels_on_edit():
+    """`slack_cli_escapes_on_edit: false` for a CLI that sends parse=none."""
+    run, calls = recorder([(0, "")])
+    Slack(run=run, escapes_on_edit=False).update("C1", "1.0", "见 <https://x/p1|全文>")
+    sent = calls[0][0][calls[0][0].index("--message") + 1]
+    assert sent == "见 <https://x/p1|全文>"
+
+
+def test_from_config_reads_the_escaping_flag():
+    assert Slack.from_config({}).escapes_on_edit is True
+    assert Slack.from_config({"slack_cli_escapes_on_edit": False}).escapes_on_edit is False
