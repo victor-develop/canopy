@@ -187,12 +187,12 @@ def test_config_set_and_show(cli_env, capsys):
     assert cfg["cron_interval_minutes"] == 10 and cfg["locale"] == "en"
 
 
-def test_canvas_stores_the_link(cli_env, capsys):
+def test_map_prints_the_tree_message_link(cli_env, capsys):
     track_one(cli_env)
     capsys.readouterr()
-    run(["canvas", "pay", "--link", "https://example.slack.com/canvas/F1"])
+    run(["map", "pay"])
     out = capsys.readouterr().out
-    assert "https://example.slack.com/canvas/F1" in out
+    assert "第 1 段" in out and "https://example.slack.com/archives/" in out
 
 
 def test_unknown_ref_exits_nonzero(cli_env, capsys):

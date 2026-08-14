@@ -120,7 +120,7 @@ class Feed(object):
                 "segment_index": index,
                 "prev_segment_index": active["index"],
                 "prev_segment_permalink": prev_permalink,
-                "canvas_permalink": self.state.get("canvas_permalink"),
+                "tree_permalink": self.state.get("tree_permalink"),
             },
             "entries": [entry],
             "sealed": False,

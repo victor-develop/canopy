@@ -1,6 +1,6 @@
 ---
 moment: return
-vars: [agent, title, alias, summary, feed_permalink, canvas_permalink]
+vars: [agent, title, alias, summary, feed_permalink, tree_permalink]
 ---
 *[{{agent}}]* Drafted a wrap-up for `{{alias}}` — *{{title}}*
 
@@ -8,4 +8,4 @@ vars: [agent, title, alias, summary, feed_permalink, canvas_permalink]
 
 ⚠️ Haven't sent it up yet. Reply `@{{agent}} ack return` to post it to the parent, or `@{{agent}} guide: …` to redraft.
 
-<{{feed_permalink}}|Open feed>  ·  <{{canvas_permalink}}|See tree>
+<{{feed_permalink}}|Open feed>  ·  <{{tree_permalink}}|See tree>

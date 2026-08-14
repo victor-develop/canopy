@@ -9,10 +9,10 @@ command layers stay thin and this module holds the behaviour.
 import time
 from pathlib import Path
 
-from . import canvas as canvas_mod
 from . import config as config_mod
 from . import feed as feed_mod
-from . import noderef, paths, slack as slack_mod, store, templates
+from . import noderef, paths, shortid, slack as slack_mod, store, templates
+from . import treemap as treemap_mod
 
 
 class Ctx(object):
@@ -72,34 +72,102 @@ def _alias(tree, nid):
     return noderef.aliases(tree)[nid]
 
 
-def _refresh_canvas(ctx, tree):
+def _states(ctx, tree):
     states = {}
     for nid in tree.nodes:
         try:
-            state = store.load_state(ctx.dh, tree.proj_id, nid)
+            states[nid] = store.load_state(ctx.dh, tree.proj_id, nid)
         except FileNotFoundError:
             continue
-        if state.get("feed_ts"):
-            state = dict(state)
-            state["feed_permalink"] = ctx.permalink(state["channel"],
-                                                    state["feed_ts"][-1])
-        states[nid] = state
-    return canvas_mod.write(ctx.dh, tree, states=states, root=ctx.root)
+    return states
+
+
+def sync_treemap(ctx, tree):
+    """Post or update the tree message(s). -> the segments, with their ts.
+
+    Two passes on purpose: a segment's rows contain links to *other* segments,
+    which only have a ts once they have been posted. So post/refresh every
+    segment first with pointer text, then rewrite them now that every ts is
+    known. Costs one extra `chat.update` per segment on the tick where the tree
+    actually changed shape, and nothing on the ticks where it didn't.
+    """
+    channel = store.split_node_id(tree.root)[0]
+    states = _states(ctx, tree)
+    segments = treemap_mod.segments(tree)
+    stored = tree.data.setdefault("tree_msgs", [])
+    by_index = dict((m["index"], m) for m in stored)
+
+    for seg in segments:
+        if seg["index"] not in by_index:
+            entry = {"index": seg["index"], "channel": channel, "ts": None,
+                     "root": seg["root"]}
+            stored.append(entry)
+            by_index[seg["index"]] = entry
+            entry["ts"] = ctx.slack.post(channel, "…")
+        by_index[seg["index"]]["root"] = seg["root"]
+
+    def segment_link(node_id):
+        index = treemap_mod.segment_of(tree, node_id)
+        msg = by_index.get(index)
+        return ctx.permalink(channel, msg["ts"]) if msg and msg.get("ts") else None
+
+    alias_map = noderef.aliases(tree)
+    title = tree.node(tree.root).get("title")
+    for seg in segments:
+        values = {
+            "title": title,
+            "proj_id": tree.proj_id,
+            "segment_index": seg["index"],
+            "body": treemap_mod.render_body(tree, seg, states=states,
+                                            permalink=ctx.permalink,
+                                            segment_link=segment_link),
+            "counts": treemap_mod.counts_text(tree),
+        }
+        name = "tree-map.md"
+        if seg["index"] > 1:
+            parent = tree.parent(seg["root"])
+            name = "tree-map-more.md"
+            values["parent_alias"] = alias_map[seg["root"]]
+            values["parent_permalink"] = segment_link(parent) if parent else ""
+        text = ctx.render(name, values, tree=tree, proj_id=tree.proj_id)
+        ctx.slack.update(channel, by_index[seg["index"]]["ts"], text)
+
+    for entry in stored:
+        if entry["index"] > len(segments):
+            # The tree shrank (a branch was untracked). Leave a pointer rather
+            # than a stale copy of a tree that no longer exists.
+            ctx.slack.update(channel, entry["ts"], ctx.render(
+                "tree-map-merged.md", {
+                    "title": title,
+                    "proj_id": tree.proj_id,
+                    "segment_index": entry["index"],
+                    "first_permalink": segment_link(tree.root),
+                }, tree=tree, proj_id=tree.proj_id))
+
+    tree.save()
+    return segments
 
 
 # -- track --------------------------------------------------------------------
 
 def track(ctx, link, title=None, owner=None, locale=None, proj_id=None,
-          agent=None):
+          agent=None, namer=None):
     """Adopt a live thread: root node, feed, in-thread announce, Canvas."""
     channel, thread_ts = slack_mod.parse_thread_link(link)
     locale = locale or ctx.cfg.get("locale", "zh")
     paths.seed(ctx.dh, locale, root=ctx.root)
 
     title = title or _title_from_thread(ctx, channel, thread_ts)
-    proj_id = proj_id or store.slugify(title)
-    if (paths.project_dir(ctx.dh, proj_id) / "tree.json").exists():
-        raise ValueError("project %r already tracked" % (proj_id,))
+    if proj_id:
+        if (paths.project_dir(ctx.dh, proj_id) / "tree.json").exists():
+            raise ValueError("project %r already tracked" % (proj_id,))
+    else:
+        suggested = shortid.suggest(ctx.cfg, title, ctx.dh, run=namer)
+        proj_id = store.unique_proj_id(ctx.dh, suggested or store.slugify(title))
+
+    for existing in store.list_projects(ctx.dh):
+        if store.Tree.load(ctx.dh, existing).root == store.node_id(channel, thread_ts):
+            raise ValueError("that thread is already tracked as %r" % (existing,))
 
     nid = store.node_id(channel, thread_ts)
     owner = owner or ctx.cfg.get("owner") or ""
@@ -115,9 +183,9 @@ def track(ctx, link, title=None, owner=None, locale=None, proj_id=None,
     node_dir.mkdir(parents=True, exist_ok=True)
     store.save_state(ctx.dh, proj_id, state)
 
-    _refresh_canvas(ctx, tree)
-    canvas_link = canvas_mod.permalink(tree, ctx.dh)
-    state["canvas_permalink"] = canvas_link
+    sync_treemap(ctx, tree)
+    tree_link = treemap_mod.permalink(tree, ctx.cfg, nid)
+    state["tree_permalink"] = tree_link
 
     feed = ctx.feed(proj_id, state, tree)
     feed_ts = feed.open("root", {
@@ -126,22 +194,23 @@ def track(ctx, link, title=None, owner=None, locale=None, proj_id=None,
         "owner": owner,
         "status": "active",
         "raw_permalink": state["raw_permalink"],
-        "canvas_permalink": canvas_link,
+        "tree_permalink": tree_link,
     })
 
     announce = ctx.render("track-announce.md", {
         "agent": agent,
         "feed_permalink": ctx.permalink(channel, feed_ts),
-        "canvas_permalink": canvas_link,
+        "tree_permalink": tree_link,
     }, tree=tree, proj_id=proj_id)
     announce_ts = ctx.slack.post(channel, announce, thread_ts=thread_ts)
 
     state["cursor"] = announce_ts
     store.save_state(ctx.dh, proj_id, state)
-    _refresh_canvas(ctx, tree)
+    sync_treemap(ctx, tree)
 
     return {"proj_id": proj_id, "node_id": nid, "feed_ts": feed_ts,
-            "announce_ts": announce_ts, "canvas": canvas_link, "title": title}
+            "announce_ts": announce_ts, "tree_permalink": tree_link,
+            "title": title}
 
 
 # -- fork ---------------------------------------------------------------------
@@ -152,14 +221,14 @@ def fork(ctx, proj_id, parent_nid, title, agent=None):
     parent_state = store.load_state(ctx.dh, proj_id, parent_nid)
     channel = parent_state["channel"]
     agent = agent or ctx.agent(parent_state)
-    canvas_link = canvas_mod.permalink(tree, ctx.dh)
+    tree_link = treemap_mod.permalink(tree, ctx.cfg, parent_nid)
     parent_permalink = ctx.permalink(channel, parent_state["thread_ts"])
 
     kickoff = ctx.render("fork-thread.md", {
         "agent": agent,
         "title": title,
         "parent_permalink": parent_permalink,
-        "canvas_permalink": canvas_link,
+        "tree_permalink": tree_link,
     }, tree=tree, proj_id=proj_id)
     child_ts = ctx.slack.post(channel, kickoff)
 
@@ -170,7 +239,7 @@ def fork(ctx, proj_id, parent_nid, title, agent=None):
     child_state = store.new_state(channel, child_ts, parent_nid, title,
                                   parent_state.get("owner"),
                                   ctx.permalink(channel, child_ts),
-                                  canvas_permalink=canvas_link,
+                                  tree_permalink=tree_link,
                                   reply_as=parent_state.get("reply_as"))
     ctx.node_dir(proj_id, child_id).mkdir(parents=True, exist_ok=True)
     store.save_state(ctx.dh, proj_id, child_state)
@@ -187,7 +256,7 @@ def fork(ctx, proj_id, parent_nid, title, agent=None):
         "breadcrumb": breadcrumb,
         "raw_permalink": child_state["raw_permalink"],
         "parent_permalink": parent_permalink,
-        "canvas_permalink": canvas_link,
+        "tree_permalink": tree_link,
     })
 
     announce = ctx.render("fork-announce.md", {
@@ -200,7 +269,7 @@ def fork(ctx, proj_id, parent_nid, title, agent=None):
     ctx.slack.post(channel, announce, thread_ts=parent_state["thread_ts"])
 
     store.save_state(ctx.dh, proj_id, child_state)
-    _refresh_canvas(ctx, tree)
+    sync_treemap(ctx, tree)
     return {"proj_id": proj_id, "node_id": child_id, "alias": alias,
             "thread_ts": child_ts, "feed_ts": feed_ts}
 
@@ -252,7 +321,7 @@ def return_draft(ctx, proj_id, nid, summary, agent=None):
         "alias": alias,
         "summary": summary,
         "feed_permalink": feed_permalink,
-        "canvas_permalink": canvas_mod.permalink(tree, ctx.dh),
+        "tree_permalink": treemap_mod.permalink(tree, ctx.cfg, nid),
     }, tree=tree, proj_id=proj_id)
     ts = ctx.slack.post(state["channel"], text)
     state["return_draft"] = {"ts": ts, "summary": summary}
@@ -295,7 +364,7 @@ def set_status(ctx, proj_id, nid, status, reason="", agent=None):
     tree.save()
     state["status"] = status
     store.save_state(ctx.dh, proj_id, state)
-    _refresh_canvas(ctx, tree)
+    sync_treemap(ctx, tree)
 
     agent = agent or ctx.agent(state)
     text = ctx.render("status-change.md", {
@@ -304,7 +373,7 @@ def set_status(ctx, proj_id, nid, status, reason="", agent=None):
         "alias": _alias(tree, nid),
         "status": status,
         "reason": reason,
-        "canvas_permalink": canvas_mod.permalink(tree, ctx.dh),
+        "tree_permalink": treemap_mod.permalink(tree, ctx.cfg, nid),
     }, tree=tree, proj_id=proj_id)
     ts = None
     if state.get("feed_ts"):

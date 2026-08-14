@@ -51,10 +51,30 @@ def split_node_id(nid):
 
 
 def slugify(title, fallback="tree"):
-    """projId is the human name for a project's single root."""
-    slug = re.sub(r"[^a-z0-9]+", "-", title.strip().lower()).strip("-")
-    slug = re.sub(r"-{2,}", "-", slug)
+    """projId is the human name for a project's single root.
+
+    Keeps unicode word characters: an ASCII-only slug turns every Chinese title
+    into the same empty string, so two Chinese-titled trees would collide on the
+    fallback and the second `track` would be refused.
+    """
+    slug = re.sub(r"[^\w]+", "-", title.strip().lower(), flags=re.UNICODE)
+    slug = re.sub(r"-{2,}", "-", slug).strip("-")
     return slug[:40] or fallback
+
+
+def unique_proj_id(dh, base):
+    """`pay-timeout`, then `pay-timeout-2`, … — only for derived ids.
+
+    An explicitly passed `--project` still collides loudly: if you named it, you
+    meant that one.
+    """
+    from . import paths
+    candidate = base
+    n = 1
+    while (paths.project_dir(dh, candidate) / "tree.json").exists():
+        n += 1
+        candidate = "%s-%d" % (base, n)
+    return candidate
 
 
 class Tree(object):
@@ -69,8 +89,7 @@ class Tree(object):
     def new(cls, proj_id, root_id, title, owner):
         data = {
             "root": root_id,
-            "canvas_id": None,
-            "canvas_permalink": None,
+            "tree_msgs": [],
             "nodes": {
                 root_id: {
                     "parent": None,
@@ -171,7 +190,7 @@ def save_state(dh, proj_id, state):
 
 
 def new_state(channel, thread_ts, parent, title, owner, raw_permalink,
-              canvas_permalink=None, reply_as=None):
+              tree_permalink=None, reply_as=None):
     return {
         "node_id": node_id(channel, thread_ts),
         "channel": channel,
@@ -183,7 +202,7 @@ def new_state(channel, thread_ts, parent, title, owner, raw_permalink,
         "cursor": thread_ts,
         "feed_ts": [],
         "raw_permalink": raw_permalink,
-        "canvas_permalink": canvas_permalink,
+        "tree_permalink": tree_permalink,
         "reply_as": reply_as,
     }
 

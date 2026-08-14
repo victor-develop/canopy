@@ -16,12 +16,13 @@ Slack 里的活是按树长的。A君在一个 thread 里聊问题 1,聊到一�
    能横着看全树的界面。
 
 Canopy 把这棵树维护在旁边:盯每个活跃节点的新消息,消息里 `@` 了 agent 就派一个无头
-CLI worker 去处理,给每个节点维护一条 checkpoint feed,再把整棵树渲染成可点的 Canvas。
+CLI worker 去处理,给每个节点维护一条 checkpoint feed,再在频道里维护一条可点的
+树消息。
 
 ### 一个人用也成立
 
 树里不一定要有别人。把 Slack 当自己的工作台:一条 thread 一个问题,想到的子问题
-`@canopy fork` 出去各自成 thread,feed 就是这条线的进度条,Canvas 是回来接着干时的
+`@canopy fork` 出去各自成 thread,feed 就是这条线的进度条,树消息是回来接着干时的
 入口。
 
 区别只在旁观者是谁 —— 团队场景里是等结论的人,个人场景里是三天后的自己。同时压着五六
@@ -67,7 +68,7 @@ worker 就既发不出 Slack 也推不动自己的 `cursor`,而且不报错。�
 ## 命令
 
 本地 CLI(`/canopy …`):`track`、`agents`、`messages`、`tree`/`status`、
-`pause`/`resume`、`recalibrate`、`canvas`、`untrack`。
+`pause`/`resume`、`recalibrate`、`map`、`untrack`。
 
 Thread 里(`@<agent> …`):`fork`、`return`、`ack return`、`guide:`、`recalibrate`、
 `done`。
@@ -103,9 +104,10 @@ $ /canopy track https://…/archives/C0PAY/p1699000001     # locale 默认 zh
    🧵 1699.0001  “支付超时”                    原始讨论,一个字不动
       └ [canopy] 我开始盯这条 thread 了…        track-announce.md
    📌 1699.0002  🌳 支付超时 · `1`               feed-root.md
-   🗂  Canvas “pay-timeout”                      canvas.tmpl
+   🗺 1699.0003  整棵树 · `pay-timeout`          tree-map.md
   ──────────────────────────────────────────────────────────────────────
    + 注册 cron          + ~/.canopy/projects/pay-timeout/tree.json
+   projId 是 agent 起的语义化 short-id,不是标题的 slug
 ```
 
 往 thread 里 announce 这一步不是客套:少了它,feed 建起来了,但正在那条 thread 里吵的人
@@ -175,7 +177,7 @@ $ /canopy tree 1.a --depth 1         从哪儿开始、往下几层,是两个独
 
 $ /canopy pause 1.b                  不盯了,feed 留着
 $ /canopy resume 1.b
-$ /canopy canvas                     重新渲染,打印链接
+$ /canopy map                        重刷树消息,打印链接
 ```
 
 ### 6 · `return` / `ack return` / `done`:结论回灌给上一层
@@ -184,7 +186,7 @@ $ /canopy canvas                     重新渲染,打印链接
 🧵 1.a  @canopy return         草稿发成一条新消息,只给 A君 看
         @canopy ack return ──► 发进 🧵 1                  return-post.md
         @canopy done       ──► 1.a 的 feed 里发 status-change.md
-                               Canvas 上打勾
+                               树消息里打勾
 ```
 
 A君没点头之前,什么都不会进父 thread。
@@ -200,7 +202,7 @@ $ /canopy recalibrate 1        (或者在 thread 里:@canopy recalibrate)
 ### 8 · `untrack`:收树
 
 ```
-$ /canopy untrack 1            归档、不再盯它、Canvas 上置灰
+$ /canopy untrack 1            归档、不再盯它、树消息里置灰
                                (cron 是全局一条,不跟着删)
 ```
 
@@ -211,9 +213,9 @@ $ /canopy untrack 1            归档、不再盯它、Canvas 上置灰
 不连网、不连 Slack、不调模型。模块分工见
 [`scripts/README.md`](./scripts/README.md)。
 
-还没做的:Slack Canvas 只能读不能写(`slackcli` 没这个命令),所以 Canvas 先渲染成
-`projects/<projId>/canvas.md`,把真实 Canvas 链接用 `canopy canvas --link <url>`
-存进来之后,消息里的 `canvas_permalink` 才指向 Slack。
+整棵树的导航面**不是** Slack Canvas —— `slackcli` 只能读 canvas 不能写,而一条只有
+渲染它那台机器打得开的链接不如没有。所以是频道里的一条普通消息,原地更新;树深了就每 4 层
+切一条新消息,切口那个节点在上一条里变成指针,新消息回指上一条,整棵树点得动。
 
 ## License
 

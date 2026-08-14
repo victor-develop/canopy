@@ -2,7 +2,6 @@ import json
 
 import pytest
 
-from canopy import canvas as canvas_mod
 from canopy import config as config_mod
 from canopy import cron, store
 from canopy.errors import SlackError
@@ -115,30 +114,3 @@ def test_uninstall_keeps_other_jobs():
 def test_empty_crontab_exit_code_is_not_an_error():
     run, _ = recorder([(1, "")])
     assert cron.read_crontab(run=run) == ""
-
-
-# -- canvas -------------------------------------------------------------------
-
-def build_tree():
-    tree = store.Tree.new("pay", "C1-1.0", "支付超时", "A君")
-    tree.add_child("C1-1.0", "C1-2.0", "慢查询定位", owner="E君")
-    tree.set_status("C1-2.0", "done")
-    return tree
-
-
-def test_canvas_marks_done_and_nests():
-    text = canvas_mod.render(build_tree(), states={
-        "C1-1.0": {"raw_permalink": "https://x/p1", "feed_permalink": "https://x/f1"},
-    })
-    assert "• `1` 支付超时" in text
-    assert "  - ✔ `1.a` 慢查询定位" in text
-    assert "[feed](https://x/f1)" in text
-
-
-def test_canvas_permalink_is_the_file_until_a_link_is_set(dh, repo):
-    tree = build_tree()
-    tree.save(dh)
-    assert canvas_mod.permalink(tree, dh).startswith("file://")
-    canvas_mod.set_link(dh, "pay", "https://x.slack.com/canvas/F1")
-    assert canvas_mod.permalink(store.Tree.load(dh, "pay"), dh) == \
-        "https://x.slack.com/canvas/F1"

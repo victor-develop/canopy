@@ -33,7 +33,7 @@ one level of thread. Three pains fall out:
 Canopy is a skill A君's local agent runs. It maintains the tree off to the side,
 watches each active node for new messages, dispatches `@agent` mentions to
 headless CLI workers (`codex exec` by default), keeps a curated checkpoint feed
-per node, and renders a clickable Canvas of the whole tree.
+per node, and keeps a clickable map of the whole tree posted in the channel.
 
 ## Core architecture: two-tier cron, nothing long-lived
 
@@ -148,7 +148,6 @@ skill-root/                      # git, READ-ONLY at runtime, PR-able
     profiles/*.md                # seed profiles — canopy.md is the default agent
     messages/<locale>/*.md       # seed Slack message templates, per language (zh, en)
     default-summarizer.md        # default feed prompt
-    canvas.tmpl
 
 $CANOPY_DATA_HOME  (default ~/.canopy/)   # per-user, NOT in the repo
   config.json                    # cron interval, slack token ref, data path,
@@ -201,7 +200,7 @@ then may read the parent node's `transcript.jsonl`.
 
 ### Loop B — checkpoint feed
 Each node owns a `feed` — a checkpoint message posted **in the same channel** at
-`track`/`fork` time, linking the raw thread permalink and the Canvas. `feed_ts`
+`track`/`fork` time, linking the raw thread permalink and the tree map. `feed_ts`
 is an **array of segments** (see below). On each wake the summarizer reads
 `templates/default-summarizer.md` + the node's `guide.md` + new messages, decides
 for itself whether progress is "checkpoint-worthy," and if so `chat.update`s the
@@ -228,7 +227,7 @@ segmented per-tick update is the cheap common path.
 
 ## Message templates — every byte Canopy posts to Slack
 
-Observers never read `tree.json` or the Canvas source; they read the messages
+Observers never read `tree.json`; they read the messages
 Canopy posts. Those messages are the product, so **none of their wording is
 hardcoded**. Every posting moment renders a template, and every template is
 user-editable and PR-able.
@@ -328,9 +327,14 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
 
 - `track <slackThreadLink> [--locale <l>]` — **main entrypoint.** Create the root
   node + `tree.json`, post the root checkpoint message (linking raw thread +
-  Canvas), **announce into the raw thread itself** so the people already
+  tree map), **announce into the raw thread itself** so the people already
   discussing there learn it is watched and where to follow, register the cron
-  job, build the Canvas.
+  job, post the tree map.
+
+  The projId is not a slug of the title: `track` asks the runner for a short
+  semantic id (`figma-free-design`) because that id gets typed in every later
+  command, and falls back to the mechanical slug when the call fails. One small
+  model call, once per tree.
 
   The announce is not optional politeness: without it, a feed exists that the
   actual participants never hear about, and A君 ends up pasting the link by hand
@@ -374,14 +378,14 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
   problem it exists to solve.
 - `pause <node>` / `resume <node>` — stop / restart watching a node.
 - `recalibrate <node>` — CLI form of Loop C.
-- `canvas` — force-regenerate and print the Canvas link.
-- `untrack <node>` — archive the node, stop watching, grey it in the Canvas.
+- `map` — refresh the tree message(s) and print their links.
+- `untrack <node>` — archive the node, stop watching, grey it in the tree map.
 
 ### In-thread — `@<agent> <cmd>` (posted in Slack)
 
 - `fork <title>` — open a sub-problem. The **current thread_ts becomes parent**;
   add the edge to `tree.json`, post a new root checkpoint message in the same
-  channel (linking the parent message + Canvas), and reply in the parent thread
+  channel (linking the parent message + tree map), and reply in the parent thread
   pointing at the new thread. The edge is written at fork time — never inferred
   later.
 - `return` — draft a summary to a **new message** for A君 to review before it
@@ -390,7 +394,7 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
   `[$agentName]: …`, linking the child's feed permalink.
 - `guide: <text>` — append to this node's `guide.md`; effective next tick.
 - `recalibrate` — rebuild this node's feed (Loop C).
-- `done` — mark the node complete; tick it in the Canvas (pairs with `return`).
+- `done` — mark the node complete; tick it in the tree map (pairs with `return`).
 
 ## State schemas
 
@@ -398,7 +402,8 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
 ```json
 {
   "root": "C123-1699.0001",
-  "canvas_id": "F0ABC",
+  "tree_msgs": [{"index": 1, "channel": "C123", "ts": "1699.0002",
+                 "root": "C123-1699.0001"}],
   "nodes": {
     "C123-1699.0001": {
       "parent": null,
@@ -429,7 +434,7 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
   "cursor": "1699.5000",
   "feed_ts": ["1699.0043", "1701.9000"],
   "raw_permalink": "https://.../p1699000042",
-  "canvas_permalink": "https://.../canvas",
+  "tree_permalink": "https://.../p1699000002",
   "reply_as": "arch"
 }
 ```
@@ -437,17 +442,23 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
 entry is the live one. `reply_as`: reply identity for this node — omit it and the
 node replies as `canopy`, the shipped default agent.
 
-## Canvas rendering
+## The tree map — the whole tree, as messages
 
-Whenever tree structure or a node's status changes, regenerate the Canvas from
-`templates/canvas.tmpl`: a clickable tree/graph where each node links its raw
-thread permalink and its feed message, and `done` nodes are ticked, `paused`/
-`untracked` greyed. This is A君's fast navigation surface across the whole tree.
+A君's navigation surface is a message in the same channel, updated in place
+whenever structure or status changes: every node as a row with its alias, title,
+status mark, owner, and links to its raw thread and its feed. `done` ticked,
+`paused`/`untracked` marked.
 
-`slackcli` can read canvases but not write one, so Canopy renders the file
-(`projects/<projId>/canvas.md`) and uses it as the link target until you paste
-the real Canvas URL in with `canopy canvas --link <url>`; from then on every
-message that carries `canvas_permalink` points at the Canvas.
+**Not a Slack Canvas.** `slackcli` can read canvases but not write one, and a
+Canvas link that only opens on the machine that rendered it is worse than no
+link — so the map is an ordinary message anyone in the channel can click.
+
+**Segmented every 4 levels.** One message can't hold a deep tree. A node at the
+cut line stops being a row and becomes a pointer into the message that continues
+from it; that message links back to the one above. The tree stays walkable by
+clicking, which is the only reason to have a map at all. `tree_msgs` in
+`tree.json` records each segment's ts, and `tree_permalink` on a node points at
+the segment its row actually lives in — not always segment 1.
 
 ## Implementation
 

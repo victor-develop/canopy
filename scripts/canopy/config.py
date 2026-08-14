@@ -12,6 +12,8 @@ DEFAULTS = {
     "runner_path": None,
     "slack_workspace_url": None,
     "slack_token_env": "CANOPY_SLACK_TOKEN",
+    "runner_timeout_seconds": 900,
+    "shortid_timeout_seconds": 90,
     "lock_stale_seconds": 1800,
     "feed_segment_max_chars": 3500,
 }

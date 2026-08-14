@@ -5,10 +5,10 @@ import json
 import sys
 from pathlib import Path
 
-from . import canvas as canvas_mod
 from . import config as config_mod
 from . import cron, noderef, ops, paths, runner as runner_mod
-from . import store, templates, tick as tick_mod, treeview, worker
+from . import store, templates, tick as tick_mod, treemap as treemap_mod
+from . import treeview, worker
 from .errors import CanopyError, NodeRefError
 
 
@@ -56,7 +56,7 @@ def cmd_track(args):
     print("tracked %s as `%s`" % (result["title"], result["proj_id"]))
     print("  feed     %s" % ctx.permalink(result["node_id"].split("-")[0],
                                           result["feed_ts"]))
-    print("  canvas   %s" % result["canvas"])
+    print("  树消息   %s" % result["tree_permalink"])
     return 0
 
 
@@ -140,7 +140,7 @@ def _preview_values(ctx, args):
             "raw_permalink": state.get("raw_permalink"),
             "parent_permalink": state.get("raw_permalink"),
             "child_raw_permalink": state.get("raw_permalink"),
-            "canvas_permalink": canvas_mod.permalink(tree, ctx.dh),
+            "tree_permalink": treemap_mod.permalink(tree, ctx.cfg, nid) or "#tree",
             "feed_permalink": ctx.permalink(state["channel"], feed_ts) if feed_ts else "",
             "entries": "", "summary": "(summary)", "body": "(reply body)",
             "reason": "", "icon": "•", "author": "someone", "date": "2026-01-01",
@@ -152,7 +152,7 @@ def _preview_values(ctx, args):
         "alias": "1.a", "owner": "A君", "status": "active",
         "breadcrumb": "example / 1", "raw_permalink": "#raw",
         "parent_permalink": "#parent", "child_raw_permalink": "#child",
-        "canvas_permalink": "#canvas", "feed_permalink": "#feed",
+        "tree_permalink": "#tree", "feed_permalink": "#feed",
         "entries": "• 示例 checkpoint", "summary": "(summary)",
         "body": "(reply body)", "reason": "", "icon": "•", "author": "someone",
         "date": "2026-01-01", "segment_index": 2, "prev_segment_index": 1,
@@ -230,20 +230,22 @@ def cmd_recalibrate(args):
     return 0
 
 
-def cmd_canvas(args):
+def cmd_map(args):
+    """Re-post/refresh the tree message(s) and print where they are."""
     ctx = _ctx(args)
     trees = ctx.trees()
     if not trees:
         print("nothing tracked yet")
         return 0
-    if args.link:
-        proj_id, _nid = _resolve(ctx, args.ref or sorted(trees)[0])
-        canvas_mod.set_link(ctx.dh, proj_id, args.link)
-        trees = ctx.trees()
+    if args.ref:
+        proj_id, _nid = _resolve(ctx, args.ref)
+        trees = {proj_id: trees[proj_id]}
     for proj_id, tree in sorted(trees.items()):
-        path = ops._refresh_canvas(ctx, tree)
-        print("%-24s %s" % (proj_id, canvas_mod.permalink(tree, ctx.dh)))
-        print("%-24s %s" % ("", path))
+        segments = ops.sync_treemap(ctx, tree)
+        for seg in segments:
+            print("%-24s 第 %d 段  %s" % (proj_id, seg["index"],
+                                          treemap_mod.permalink(tree, ctx.cfg,
+                                                                seg["root"])))
     return 0
 
 
@@ -341,10 +343,9 @@ def build_parser():
     p.add_argument("ref")
     p.set_defaults(func=cmd_recalibrate)
 
-    p = sub.add_parser("canvas", help="re-render the Canvas")
+    p = sub.add_parser("map", help="refresh the tree message(s) in Slack")
     p.add_argument("ref", nargs="?")
-    p.add_argument("--link", help="store the Slack Canvas URL for this project")
-    p.set_defaults(func=cmd_canvas)
+    p.set_defaults(func=cmd_map)
 
     p = sub.add_parser("reply", help="post into a node's thread as an agent")
     p.add_argument("ref")

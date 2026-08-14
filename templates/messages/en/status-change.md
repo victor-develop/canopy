@@ -1,7 +1,7 @@
 ---
 moment: status_change
-vars: [agent, title, alias, status, reason, canvas_permalink]
+vars: [agent, title, alias, status, reason, tree_permalink]
 ---
 *[{{agent}}]* `{{alias}}` — *{{title}}* → *{{status}}*. {{reason}}
 
-<{{canvas_permalink}}|See tree>
+<{{tree_permalink}}|See tree>

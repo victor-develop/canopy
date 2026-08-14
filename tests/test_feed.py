@@ -15,7 +15,8 @@ def test_append_updates_the_live_segment_in_place(ctx, slack, tracked):
     assert len(segments) == 1
     assert len(segments[0]["entries"]) == 2
     # Both checkpoints live in the ONE feed message an observer pinned.
-    assert all(u["ts"] == tracked["feed_ts"] for u in slack.updates)
+    feed_updates = [u for u in slack.updates if u["ts"] == tracked["feed_ts"]]
+    assert len(feed_updates) == 2
     assert "决定先加索引" in slack.text_of(tracked["feed_ts"])
 
 

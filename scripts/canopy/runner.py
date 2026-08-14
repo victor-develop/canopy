@@ -16,10 +16,15 @@ from pathlib import Path
 from .errors import RunnerError
 
 
-def _run(argv, prompt, cwd):
-    proc = subprocess.run(argv, input=prompt.encode("utf-8"),
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          cwd=str(cwd) if cwd else None)
+def _run(argv, prompt, cwd, timeout=None):
+    """A hung worker holds its node's lock, so every run is time-boxed."""
+    try:
+        proc = subprocess.run(argv, input=prompt.encode("utf-8"),
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              cwd=str(cwd) if cwd else None, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RunnerError("runner did not finish within %ss: %s"
+                          % (timeout, " ".join(argv)))
     return (proc.returncode,
             proc.stdout.decode("utf-8", "replace"),
             proc.stderr.decode("utf-8", "replace"))
@@ -74,14 +79,19 @@ def build_argv(cfg, node_dir, out_file=None):
     )
 
 
-def run(cfg, prompt, node_dir, out_file=None, exec_fn=None):
+def run(cfg, prompt, node_dir, out_file=None, exec_fn=None, timeout=None):
     """-> the worker's last message.
 
     Prefers codex's `-o` file when it exists, since stdout also carries the
     run's own chatter; falls back to stdout for runners without that flag.
     """
     argv = build_argv(cfg, node_dir, out_file=out_file)
-    code, out, err = (exec_fn or _run)(argv, prompt, node_dir)
+    if timeout is None:
+        timeout = cfg.get("runner_timeout_seconds") or None
+    if exec_fn:
+        code, out, err = exec_fn(argv, prompt, node_dir)
+    else:
+        code, out, err = _run(argv, prompt, node_dir, timeout=timeout)
     if code != 0:
         raise RunnerError("runner exited %s: %s" % (code, (err or out).strip()[:500]))
     if out_file and Path(out_file).exists():

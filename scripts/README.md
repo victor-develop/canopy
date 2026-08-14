@@ -18,7 +18,7 @@ profile having run.
 
 | Module | What it owns |
 |---|---|
-| `cli.py` | argv → command. `track`, `agents`, `messages`, `tree`/`status`, `pause`/`resume`, `recalibrate`, `canvas`, `untrack`, plus `tick`, `reply`, `config` |
+| `cli.py` | argv → command. `track`, `agents`, `messages`, `tree`/`status`, `pause`/`resume`, `recalibrate`, `map`, `untrack`, plus `tick`, `reply`, `config` |
 | `ops.py` | every operation that changes a tree, shared by the CLI and the in-thread commands so both produce identically-shaped state |
 | `tick.py` | the cron tick: the zero-LLM gate, then dispatch |
 | `worker.py` | what a woken node gets: structural command, light summarizer, or full agent |
@@ -28,7 +28,8 @@ profile having run.
 | `noderef.py` | path aliases (`1.a.ii`) and resolving any ref to one node |
 | `treeview.py` | `tree` output: start point × `--depth`, rollups, breadcrumb |
 | `slack.py` | the only place that talks to Slack, via `slackcli` as a subprocess |
-| `canvas.py` | the Canvas markdown |
+| `treemap.py` | the tree message: rows, depth segmentation, which segment holds a node |
+| `shortid.py` | asking the runner for the project's short semantic id |
 | `store.py` | `tree.json` / `state.json`, atomic writes |
 | `locks.py` | one lock file per node, staleness and dead-pid handling |
 | `prompts.py` | what a worker is actually told |
@@ -50,6 +51,8 @@ passing a handler that raises if it is ever called.
 
 ## Tests
 
-`python3 -m pytest` — 130-odd tests, no network, no Slack, no model. The fake
+`python3 -m pytest` — 150-odd tests, no network, no Slack, no model. The fake
 Slack in `tests/conftest.py` records every post, edit, and reaction, so tests
-assert on the exact text that would have hit the channel.
+assert on the exact text that would have hit the channel. An autouse fixture
+blocks the real runner, so a test that forgets to inject a fake fails loudly
+instead of quietly shelling out to codex.
