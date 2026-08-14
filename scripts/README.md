@@ -18,7 +18,7 @@ profile having run.
 
 | Module | What it owns |
 |---|---|
-| `cli.py` | argv → command. `track`, `agents`, `messages`, `tree`/`status`, `pause`/`resume`, `recalibrate`, `map`, `untrack`, plus `tick`, `reply`, `config` |
+| `cli.py` | argv → command. `track`, `agents`, `messages`, `tree`/`status`, `rename`, `recalibrate`, `map`, `untrack`, plus `tick`, `reply`, `config` |
 | `ops.py` | every operation that changes a tree, shared by the CLI and the in-thread commands so both produce identically-shaped state |
 | `tick.py` | the cron tick: the zero-LLM gate, then dispatch |
 | `worker.py` | what a woken node gets: structural command, light summarizer, or full agent |
@@ -39,7 +39,7 @@ profile having run.
 
 ## Two things worth knowing before changing this
 
-**Structural commands never reach the model.** `fork`, `done`, `guide:`,
+**Structural commands never reach the model.** `fork`, `untrack`, `guide:`,
 `return`, `ack return` are parsed in `mentions.py` and executed in `ops.py`. A
 fork writes an edge into `tree.json`, and a hallucinated edge is a corrupted
 tree nobody notices for a week. The model is only asked for replies and
@@ -51,7 +51,7 @@ passing a handler that raises if it is ever called.
 
 ## Tests
 
-`python3 -m pytest` — 150-odd tests, no network, no Slack, no model. The fake
+`python3 -m pytest` — 166 tests, no network, no Slack, no model. The fake
 Slack in `tests/conftest.py` records every post, edit, and reaction, so tests
 assert on the exact text that would have hit the channel. An autouse fixture
 blocks the real runner, so a test that forgets to inject a fake fails loudly

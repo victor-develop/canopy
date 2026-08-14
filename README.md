@@ -81,10 +81,11 @@ canopy 不会因此崩:把 `slack_cli_escapes_on_edit` 设成 `true`,它会把�
 ## 命令
 
 本地 CLI(`/canopy …`):`track`、`agents`、`messages`、`tree`/`status`、
-`pause`/`resume`、`recalibrate`、`map`、`untrack`。
+`recalibrate`、`map`、`untrack`。
 
 Thread 里(`@<agent> …`):`fork`、`return`、`ack return`、`guide:`、`recalibrate`、
-`done`。
+`untrack`。没有 `done` —— 完成态要配 reopen,还要定义「子节点还在跑算不算完成」。
+Canopy 只做一件事:盯。所以只切换盯不盯。
 
 ## 完整流程:一个问题从盯到收
 
@@ -115,9 +116,9 @@ $ /canopy track https://…/archives/C0PAY/p1699000001     # locale 默认 zh
 
   #pay ────────────────────────────────────────────────────────────────
    🧵 1699.0001  “支付超时”                    原始讨论,一个字不动
-      └ [canopy] 我开始盯这条 thread 了…        track-announce.md
-   📌 1699.0002  🌳 支付超时 · `1`               feed-root.md
-   🗺 1699.0003  整棵树 · `pay-timeout`          tree-map.md
+      └ [canopy]: 正在[跟踪]对话并进行 [智能总结]  track-announce.md
+   📌 1699.0002  <支付超时> update feed:         feed-root.md
+   🗺 1699.0003  <支付超时> trace tree · `pay-timeout`  tree-map.md
   ──────────────────────────────────────────────────────────────────────
    + 注册 cron          + ~/.canopy/projects/pay-timeout/tree.json
    projId 是 agent 起的语义化 short-id,不是标题的 slug
@@ -141,7 +142,7 @@ cron ──► 遍历每个 active 节点
            └ 新消息里 @ 了 agent ?
                 ├ 否 ──────► 轻量 summarizer ──► 够格就往当前 feed 段
                 │                                追一条 feed-entry.md
-                ├ 是,且是命令 ► 直接跑代码 ──► fork / done / guide: …
+                ├ 是,且是命令 ► 直接跑代码 ──► fork / untrack / guide: …
                 │                                (结构性改动不经过模型)
                 └ 是,是问句 ─► 完整 worker ──► 在 thread 里回 reply.md
                                                  推进 cursor,释放 lock
@@ -162,9 +163,9 @@ cron ──► 遍历每个 active 节点
 
   #pay ────────────────────────────────────────────────────────────────
    🧵 1699.0001  “支付超时”
-      └ [canopy] 拆出 `1.a` — 慢查询定位 …      fork-announce.md
+      └ [canopy]: 拆出 `1.a` [慢查询定位]…      fork-announce.md
    🧵 1701.0500  “慢查询定位”                    新 thread,E/F 在这儿聊
-   📌 1701.0501  🌳 慢查询定位 · `1.a`            feed-fork.md
+   📌 1701.0501  <慢查询定位> update feed:      feed-fork.md
   ──────────────────────────────────────────────────────────────────────
    tree.json: 1 ──► 1.a          边是 fork 当场写下的,不靠事后推断
 ```
@@ -175,31 +176,31 @@ cron ──► 遍历每个 active 节点
 
 ```
 $ /canopy tree                       不带参数 → 所有根,depth 0
-  pay-timeout  支付超时     active   4 active / 1 paused / 2 done   🔒1
+  pay-timeout  支付超时     active   4 active / 2 untracked   🔒1
 
 $ /canopy tree pay-timeout           点名一个根 → depth all
-  1        支付超时         active   A君
-  ├ 1.a    慢查询定位       active   E君    回话身份 @arch
-  │ └ 1.a.i  索引方案       active   F君    🔒 worker 正在跑
-  └ 1.b    重试风暴         paused   A君
+  1        支付超时         active     A君
+  ├ 1.a    慢查询定位       active     E君
+  │ └ 1.a.i  索引方案       active     F君    🔒 worker 正在跑
+  └ 1.b    重试风暴         untracked  A君
 
 $ /canopy tree 1.a --depth 1         从哪儿开始、往下几层,是两个独立参数
   ↑ pay-timeout / 1                  面包屑,免得看丢位置
-  1.a      慢查询定位       active   E君    回话身份 @arch
-  └ 1.a.i  索引方案         active   F君    ▸ 2 done
+  1.a      慢查询定位       active   E君
+  └ 1.a.i  索引方案         active   F君    ▸ 2 untracked
 
-$ /canopy pause 1.b                  不盯了,feed 留着
-$ /canopy resume 1.b
+$ /canopy untrack 1.b                不盯了,feed 留着,树上标 ×
+$ /canopy track 1.b                  重新盯上
 $ /canopy map                        重刷树消息,打印链接
 ```
 
-### 6 · `return` / `ack return` / `done`:结论回灌给上一层
+### 6 · `return` / `ack return`:结论回灌给上一层
 
 ```
 🧵 1.a  @canopy return         草稿发成一条新消息,只给 A君 看
         @canopy ack return ──► 发进 🧵 1                  return-post.md
-        @canopy done       ──► 1.a 的 feed 里发 status-change.md
-                               树消息里打勾
+        @canopy untrack    ──► 1.a 的 feed 里发 status-untracked.md
+                               trace tree 里标 ×
 ```
 
 A君没点头之前,什么都不会进父 thread。
@@ -215,8 +216,8 @@ $ /canopy recalibrate 1        (或者在 thread 里:@canopy recalibrate)
 ### 8 · `untrack`:收树
 
 ```
-$ /canopy untrack 1            归档、不再盯它、树消息里置灰
-                               (cron 是全局一条,不跟着删)
+$ /canopy untrack 1            不再盯它,trace tree 里标 ×
+                               (cron 是全局一条,不跟着删;想重开就 track 1)
 ```
 
 ## 现状

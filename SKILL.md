@@ -265,7 +265,7 @@ user-editable and PR-able.
 | worker replies in-thread (Loop A) | `reply.md` | the node's thread |
 | `return` | `return-draft.md` | new message, for A君's review only |
 | `ack return` | `return-post.md` | the **parent** thread |
-| `done` / `pause` / `untrack` | `status-change.md` | the node's feed |
+| `untrack` / `track` again | `status-untracked.md` / `status-tracked.md` | the node's feed |
 
 `guide:` gets an emoji reaction, not a message — steering the summarizer should
 not add noise to the thread everyone is reading.
@@ -345,7 +345,8 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
 
 ### Local CLI — `/canopy <cmd>` (A君 → the agent)
 
-- `track <slackThreadLink> [--locale <l>]` — **main entrypoint.** Create the root
+- `track <slackThreadLink|node> [--locale <l>]` — **main entrypoint.** With a
+  link, create the root
   node + `tree.json`, post the root checkpoint message (linking raw thread +
   tree map), **announce into the raw thread itself** so the people already
   discussing there learn it is watched and where to follow, register the cron
@@ -384,7 +385,7 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
 
   How deep — `--depth`, counted from wherever you started:
   - `0` → starting node(s) only, each as a single rollup line: title, its
-    projId/alias, and counts of `active` / `paused` / `done` descendants plus how
+    projId/alias, and counts of `active` / `untracked` descendants plus how
     many currently hold a lock. **Default for the no-arg form** — a handful of
     roots, nothing expanded: the daily dashboard.
   - `N` → expand N levels; anything deeper collapses into a rollup on its
@@ -396,7 +397,6 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
   visibly truncated and you can re-run one level deeper. Deep trees are the
   normal case; the depth cap is what stops Canopy from re-creating the drowning
   problem it exists to solve.
-- `pause <node>` / `resume <node>` — stop / restart watching a node.
 - `recalibrate <node>` — CLI form of Loop C.
 - `map` — refresh the tree message(s) and print their links.
 - `untrack <node>` — archive the node, stop watching, grey it in the tree map.
@@ -414,7 +414,13 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
   `[$agentName]: …`, linking the child's feed permalink.
 - `guide: <text>` — append to this node's `guide.md`; effective next tick.
 - `recalibrate` — rebuild this node's feed (Loop C).
-- `done` — mark the node complete; tick it in the tree map (pairs with `return`).
+- `untrack` — stop watching this node; `track` starts again.
+
+There is deliberately no `done`. A completion state needs a `reopen` to undo it,
+and then a rule for what "done" means while a child is still running. Watching
+is the only thing Canopy actually does, so watching is the only thing you
+toggle — and `untrack` reads as what it is, a decision to stop, not a claim that
+the problem is solved.
 
 ## State schemas
 
@@ -458,7 +464,7 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
   "reply_as": "arch"
 }
 ```
-`status`: `active` | `paused` | `done`. `feed_ts`: sealed segments first, last
+`status`: `active` | `untracked`. `feed_ts`: sealed segments first, last
 entry is the live one. `reply_as`: reply identity for this node — omit it and the
 node replies as `canopy`, the shipped default agent.
 
@@ -466,8 +472,11 @@ node replies as `canopy`, the shipped default agent.
 
 A君's navigation surface is a message in the same channel, updated in place
 whenever structure or status changes: every node as a row with its alias, title,
-status mark, owner, and links to its raw thread and its feed. `done` ticked,
-`paused`/`untracked` marked.
+A row is four things: the depth bullet, the alias, the title, and the two links
+you click — the update feed and the raw thread. `untracked` rows keep their
+place with a `×`. Nothing else: owner, checkpoint counts, "returned", "quiet
+since" were each tried and cut. The map is scanned, not read, and every extra
+token pushes the next row's links further right.
 
 **Not a Slack Canvas.** `slackcli` can read canvases but not write one, and a
 Canvas link that only opens on the machine that rendered it is worse than no
@@ -486,7 +495,7 @@ the segment its row actually lives in — not always segment 1.
 tests. `scripts/README.md` maps module to responsibility. Two rules there are
 design decisions, not implementation details:
 
-- **Structural commands never reach the model.** `fork`, `done`, `guide:`,
+- **Structural commands never reach the model.** `fork`, `untrack`, `guide:`,
   `return`, `ack return` are parsed from the message and executed as code. A
   fork writes an edge into `tree.json`; a hallucinated edge is a corrupted tree
   nobody notices for a week. The model is asked for replies and summaries only.
