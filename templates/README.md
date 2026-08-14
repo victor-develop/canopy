@@ -6,8 +6,9 @@ written to at runtime.
 
 - `profiles/` — seed agent profiles
 - `messages/<locale>/` — every message Canopy posts to Slack, one file per
-  moment, one directory per language (`en`, `zh`). Front matter declares which
-  variables that moment provides; the body is what gets posted (Slack mrkdwn).
+  moment, one directory per language (`zh` is the default, `en` also ships).
+  Front matter declares which variables that moment provides; the body is what
+  gets posted (Slack mrkdwn).
 
 Adding a locale means copying a directory and translating the bodies — keep the
 `moment` and `vars` front matter identical across languages, or `--preview` will

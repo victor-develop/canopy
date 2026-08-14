@@ -1,51 +1,176 @@
 # canopy
 
-Turn a sprawling Slack discussion into a navigable **tree of sub-problems**, each
-with its own curated **checkpoint feed** — a Claude skill that runs off-line via
-`cron` + `claude -p`, with no long-lived process.
+把发散的 Slack 讨论整理成一棵能导航的**子问题树**,每个节点带一条自己的
+**checkpoint feed**。一个 Claude skill,靠 `cron` + `claude -p` 离线跑,没有常驻进程。
 
-## The problem
+## 要解决什么
 
-Real work in Slack forks like a tree. Someone discusses problem 1 in a thread;
-mid-way a side-problem 1.a appears, gets its own owner and its own sub-thread,
-pulls in different people, and its conclusion feeds back up. This nests
-arbitrarily (1.a.i, 1.a.ii…), but Slack only gives you a channel plus one level
-of thread. Three pains follow:
+Slack 里的活是按树长的。A君在一个 thread 里聊问题 1,聊到一半冒出子问题 1.a,它有自己
+的 owner、自己的 sub-thread、拉进来的是另一批人,结论再回灌给问题 1。这样能一直嵌套
+下去(1.a.i、1.a.ii……),但 Slack 只有 channel 加一层 thread。三个痛点:
 
-1. **No infinite nesting** — the tree is real, Slack can't represent it.
-2. **Observers drown** — a stakeholder wants *key progress*, not the raw stream.
-3. **The backstop owner can't navigate** — no fast interface across the whole tree.
+1. **嵌不下去** —— 树是真实存在的,Slack 表达不了。
+2. **旁观者被淹** —— 关心这件事的人要的是关键进展,不是原始消息流。
+3. **兜底的人没法导航** —— A君要把每个子节点、子子节点都推到收口,手上却没有一个
+   能横着看全树的界面。
 
-Canopy maintains the tree off to the side, watches each active node for new
-messages, dispatches `@agent` mentions to `claude -p` workers, keeps a curated
-checkpoint feed per node, and renders a clickable Canvas of the whole tree.
+Canopy 把这棵树维护在旁边:盯每个活跃节点的新消息,消息里 `@` 了 agent 就派
+`claude -p` worker 处理,给每个节点维护一条 checkpoint feed,再把整棵树渲染成可点的
+Canvas。
 
-## How it works (one paragraph)
+## 怎么跑的
 
-No daemon. All state lives on disk under `$CANOPY_DATA_HOME` (default `~/.canopy/`).
-A cron job fires every N minutes and runs a **cheap, zero-LLM gate**: for each
-active node it asks Slack for the latest ts and skips the node unless there are
-new messages. Only when there is real work does it spend tokens — a **full agent
-worker** if a message `@`-mentions an agent, otherwise a **light summarizer** that
-only updates the feed. Workers cold-start from disk, do their job, advance the
-cursor, release a per-node lock, and exit. Crash-safe by construction.
+没有 daemon。状态全在磁盘上,默认放 `$CANOPY_DATA_HOME`(`~/.canopy/`)。cron 每 N
+分钟醒一次,先跑一道**不花 LLM 的闸门**:每个活跃节点问一次 Slack 的最新 ts,没有新
+消息就跳过。确实有活干才花 token —— 新消息里 `@` 了 agent 就起**完整 agent worker**,
+没有就起**轻量 summarizer**,只更新 feed。worker 从磁盘冷启动,干完活推进 `cursor`、
+释放节点锁、退出。中途崩了也不丢:下一 tick 从 `cursor` 重新拉。
 
-See [`SKILL.md`](./SKILL.md) for the full design: the three loops, the two-tier
-cron, code/data separation, the command set, and the state schemas.
+完整设计看 [`SKILL.md`](./SKILL.md):三个 loop、两层 cron、代码与数据分离、命令集、
+状态 schema。
 
-## Commands (preview)
+## 命令
 
-Local CLI (`/canopy …`): `track`, `agents`, `tree`/`status`, `pause`/`resume`,
-`recalibrate`, `canvas`, `untrack`.
+本地 CLI(`/canopy …`):`track`、`agents`、`messages`、`tree`/`status`、
+`pause`/`resume`、`recalibrate`、`canvas`、`untrack`。
 
-In-thread (`@<agent> …`): `fork`, `return`, `ack return`, `guide:`,
-`recalibrate`, `done`.
+Thread 里(`@<agent> …`):`fork`、`return`、`ack return`、`guide:`、`recalibrate`、
+`done`。
 
-## Status
+## 完整流程:一个问题从盯到收
 
-Design frozen; `SKILL.md` is the source of truth. `scripts/` and `templates/`
-are scaffolded and being filled in.
+拿 `#pay` 一条「支付超时」的 thread 举例,从「这 thread 太长了」走到「整棵树收掉」。
+图里右边标的,是这一步往 Slack 发了什么、用哪个模板。
+
+### 0 · 每台机器配一次(可跳过)
+
+```
+$ /canopy agents                     加自己的 agent:profiles/arch.md、qa.md
+                                       内置的 canopy 已经在了,不加也能跑
+$ /canopy messages                   列出所有模板,以及各自从哪一层解析到的
+                                       feed-root.md        user   (改过)
+                                       track-announce.md   shipped
+                                       ...
+$ /canopy messages feed-root --preview
+                                     渲染出 Slack 会收到的原文。不发。
+```
+
+装完就自带一个 agent:`canopy`。节点没设 `reply_as` 就用它回话,所以第一条 `track` 完
+马上能 `@canopy fork …`,不用先写 profile。文件名就是句柄 —— 放一个
+`profiles/arch.md` 进去,thread 里就能 `@arch`,再用节点的 `reply_as` 指过去。
+
+### 1 · `track`:接管一条正在吵的 thread
+
+```
+$ /canopy track https://…/archives/C0PAY/p1699000001     # locale 默认 zh
+
+  #pay ────────────────────────────────────────────────────────────────
+   🧵 1699.0001  “支付超时”                    原始讨论,一个字不动
+      └ [canopy] 我开始盯这条 thread 了…        track-announce.md
+   📌 1699.0002  🌳 支付超时 · `1`               feed-root.md
+   🗂  Canvas “pay-timeout”                      canvas.tmpl
+  ──────────────────────────────────────────────────────────────────────
+   + 注册 cron          + ~/.canopy/projects/pay-timeout/tree.json
+```
+
+往 thread 里 announce 这一步不是客套:少了它,feed 建起来了,但正在那条 thread 里吵的人
+不知道有这回事,A君只能挨个手动贴链接。它同时是 `fork` 和 `guide:` 的入口提示 —— 除了
+A君,别人就是从这条消息知道有这些命令。
+
+盯英文 thread 就加 `--locale en`。locale 只管 Canopy 自己发的那层框架文案,checkpoint
+摘要是 summarizer 写的,thread 说什么语言它就跟着什么语言。
+
+### 2 · 每 N 分钟一次 tick,平时没人看见
+
+```
+cron ──► 遍历每个 active 节点
+           │
+           ├ latest_ts <= cursor ? ──是──► 跳过                     0 token
+           ├ 有 lock 文件 ?        ──是──► 跳过,下一 tick 再来
+           │
+           └ 新消息里 @ 了 agent ?
+                ├ 否 ──► 轻量 summarizer ──► 够格就往当前 feed 段
+                │                            追一条 feed-entry.md
+                └ 是 ──► 完整 worker     ──► 在 thread 里回 reply.md
+                                             推进 cursor,释放 lock
+```
+
+### 3 · `guide:`:改它记什么
+
+```
+🧵 1  @canopy guide: 只记 DB 侧结论,排期讨论跳过
+      → 追加到这个节点的 guide.md,下一 tick 生效
+      → 只回一个 ✅ 表情,不发消息 —— thread 是给人读的
+```
+
+### 4 · `fork`:子问题分出去,自带 owner
+
+```
+🧵 1  @canopy fork 慢查询定位
+
+  #pay ────────────────────────────────────────────────────────────────
+   🧵 1699.0001  “支付超时”
+      └ [canopy] 拆出 `1.a` — 慢查询定位 …      fork-announce.md
+   🧵 1701.0500  “慢查询定位”                    新 thread,E/F 在这儿聊
+   📌 1701.0501  🌳 慢查询定位 · `1.a`            feed-fork.md
+  ──────────────────────────────────────────────────────────────────────
+   tree.json: 1 ──► 1.a          边是 fork 当场写下的,不靠事后推断
+```
+
+在 `1.a` 里再 fork 就得到 `1.a.i` —— Slack 装不下的那层嵌套。
+
+### 5 · `tree`:想看多粗看多粗
+
+```
+$ /canopy tree                       不带参数 → 所有根,depth 0
+  pay-timeout  支付超时     active   4 active / 1 paused / 2 done   🔒1
+
+$ /canopy tree pay-timeout           点名一个根 → depth all
+  1        支付超时         active   A君
+  ├ 1.a    慢查询定位       active   E君    回话身份 @arch
+  │ └ 1.a.i  索引方案       active   F君    🔒 worker 正在跑
+  └ 1.b    重试风暴         paused   A君
+
+$ /canopy tree 1.a --depth 1         从哪儿开始、往下几层,是两个独立参数
+  ↑ pay-timeout / 1                  面包屑,免得看丢位置
+  1.a      慢查询定位       active   E君    回话身份 @arch
+  └ 1.a.i  索引方案         active   F君    ▸ 2 done
+
+$ /canopy pause 1.b                  不盯了,feed 留着
+$ /canopy resume 1.b
+$ /canopy canvas                     重新渲染,打印链接
+```
+
+### 6 · `return` / `ack return` / `done`:结论回灌给上一层
+
+```
+🧵 1.a  @canopy return         草稿发成一条新消息,只给 A君 看
+        @canopy ack return ──► 发进 🧵 1                  return-post.md
+        @canopy done       ──► 1.a 的 feed 里发 status-change.md
+                               Canvas 上打勾
+```
+
+A君没点头之前,什么都不会进父 thread。
+
+### 7 · feed 记歪了:`recalibrate`
+
+```
+$ /canopy recalibrate 1        (或者在 thread 里:@canopy recalibrate)
+   分块读完整段历史 → 重建所有 feed 段落
+   这是重的逃生口;日常靠的是每 tick 只改最后一段的便宜路径
+```
+
+### 8 · `untrack`:收树
+
+```
+$ /canopy untrack 1            归档、注销 cron、Canvas 上置灰
+```
+
+## 现状
+
+设计已冻结,`SKILL.md` 是唯一事实来源。`scripts/` 和 `templates/` 骨架搭好了,内容还在
+往里填。
 
 ## License
 
-MIT — see [`LICENSE`](./LICENSE).
+MIT —— 见 [`LICENSE`](./LICENSE)。
