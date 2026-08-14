@@ -18,6 +18,15 @@ Slack 里的活是按树长的。A君在一个 thread 里聊问题 1,聊到一�
 Canopy 把这棵树维护在旁边:盯每个活跃节点的新消息,消息里 `@` 了 agent 就派一个无头
 CLI worker 去处理,给每个节点维护一条 checkpoint feed,再把整棵树渲染成可点的 Canvas。
 
+### 一个人用也成立
+
+树里不一定要有别人。把 Slack 当自己的工作台:一条 thread 一个问题,想到的子问题
+`@canopy fork` 出去各自成 thread,feed 就是这条线的进度条,Canvas 是回来接着干时的入口。
+
+区别只在于旁观者是谁 —— 团队场景里是等结论的人,个人场景里是三天后的自己。同时压着五六
+件事、每件隔几天才回来一次的时候,读 feed 比把 thread 从头翻一遍快:feed 里只有决定、
+结果、卡在哪,聊过程的部分 summarizer 已经扔掉了。
+
 ## 怎么跑的
 
 没有 daemon。状态全在磁盘上,默认放 `$CANOPY_DATA_HOME`(`~/.canopy/`)。cron 每 N
