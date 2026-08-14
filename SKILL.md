@@ -76,13 +76,14 @@ skill-root/                      # git, READ-ONLY at runtime, PR-able
   SKILL.md
   scripts/                       # cron-tick, reply tool, summarizer wrappers, entrypoints
   templates/
-    profiles/*.md                # seed profiles (copied out on first use)
+    profiles/*.md                # seed profiles — canopy.md is the default agent
     messages/<locale>/*.md       # seed Slack message templates, per language (zh, en)
     default-summarizer.md        # default feed prompt
     canvas.tmpl
 
 $CANOPY_DATA_HOME  (default ~/.canopy/)   # per-user, NOT in the repo
-  config.json                    # cron interval, slack token ref, data path, locale
+  config.json                    # cron interval, slack token ref, data path,
+                                 #   locale, default_agent
   profiles/<agent>.md            # the user's real, editable global agents
   messages/<locale>/*.md         # the user's real, editable message templates
   projects/<projId>/             # one per `track`
@@ -105,6 +106,15 @@ templates without clobbering the user's profiles or wording.
 Profiles are **global** (shared across all projects). Reply identity is chosen
 **per node** (`reply_as`), so 1.a can answer as `@arch` while 1.b answers as
 `@qa`, all drawing from the one profile pool.
+
+One profile ships: **`canopy.md`, the default agent.** A node with no `reply_as`
+replies as whatever `config.json`'s `default_agent` names (`canopy` out of the
+box), so `@canopy fork …` works in the first thread you track, before the user
+has written a single profile. Without a shipped default, `track` posts an
+announce telling people to `@<agent>` and there is no agent to `@` — the whole
+in-thread command set would be unreachable until someone ran `agents`. The file
+name is the handle (`profiles/arch.md` ⇒ `@arch`), so users add their own by
+dropping files next to it.
 
 ## The three loops
 
@@ -257,7 +267,9 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
   to everyone. It also doubles as the in-thread hint for `fork` / `guide:`, which
   is how anyone but A君 discovers those commands exist.
 - `agents` — enter profile-edit mode: create / edit / delete global
-  `profiles/*.md`.
+  `profiles/*.md`. Optional — `canopy` is already there. Deleting the profile
+  named by `default_agent` would leave every node without a `reply_as` with
+  nobody to answer as, so point `default_agent` at another profile first.
 - `messages` — review and edit the message templates above. No arg → list every
   template with **which layer it resolved from** (shipped / user / project), so
   you can see at a glance what you have already customized. `messages <name>`
@@ -352,7 +364,8 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
 }
 ```
 `status`: `active` | `paused` | `done`. `feed_ts`: sealed segments first, last
-entry is the live one. `reply_as`: default reply identity for this node.
+entry is the live one. `reply_as`: reply identity for this node — omit it and the
+node replies as `canopy`, the shipped default agent.
 
 ## Canvas rendering
 

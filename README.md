@@ -42,10 +42,11 @@ Thread 里(`@<agent> …`):`fork`、`return`、`ack return`、`guide:`、`recali
 拿 `#pay` 一条「支付超时」的 thread 举例,从「这 thread 太长了」走到「整棵树收掉」。
 图里右边标的,是这一步往 Slack 发了什么、用哪个模板。
 
-### 0 · 每台机器配一次
+### 0 · 每台机器配一次(可跳过)
 
 ```
-$ /canopy agents                     写 profiles/arch.md、profiles/qa.md
+$ /canopy agents                     加自己的 agent:profiles/arch.md、qa.md
+                                       内置的 canopy 已经在了,不加也能跑
 $ /canopy messages                   列出所有模板,以及各自从哪一层解析到的
                                        feed-root.md        user   (改过)
                                        track-announce.md   shipped
@@ -54,10 +55,9 @@ $ /canopy messages feed-root --preview
                                      渲染出 Slack 会收到的原文。不发。
 ```
 
-Canopy 不带任何内置 agent —— `templates/profiles/` 里只有一个占位的 `example.md`,
-首次 `track` / `agents` 时复制到 `~/.canopy/profiles/`。下面图里的 `@arch`、`@qa`
-就是这一步自己写的,名字随便起;哪个节点用哪个身份回话,看该节点 `state.json` 里的
-`reply_as`。
+装完就自带一个 agent:`canopy`。节点没设 `reply_as` 就用它回话,所以第一条 `track` 完
+马上能 `@canopy fork …`,不用先写 profile。文件名就是句柄 —— 放一个
+`profiles/arch.md` 进去,thread 里就能 `@arch`,再用节点的 `reply_as` 指过去。
 
 ### 1 · `track`:接管一条正在吵的 thread
 
@@ -65,10 +65,10 @@ Canopy 不带任何内置 agent —— `templates/profiles/` 里只有一个占�
 $ /canopy track https://…/archives/C0PAY/p1699000001     # locale 默认 zh
 
   #pay ────────────────────────────────────────────────────────────────
-   🧵 1699.0001  “支付超时”                   原始讨论,一个字不动
-      └ [arch] 我开始盯这条 thread 了…          track-announce.md
-   📌 1699.0002  🌳 支付超时 · `1`              feed-root.md
-   🗂  Canvas “pay-timeout”                     canvas.tmpl
+   🧵 1699.0001  “支付超时”                    原始讨论,一个字不动
+      └ [canopy] 我开始盯这条 thread 了…        track-announce.md
+   📌 1699.0002  🌳 支付超时 · `1`               feed-root.md
+   🗂  Canvas “pay-timeout”                      canvas.tmpl
   ──────────────────────────────────────────────────────────────────────
    + 注册 cron          + ~/.canopy/projects/pay-timeout/tree.json
 ```
@@ -98,7 +98,7 @@ cron ──► 遍历每个 active 节点
 ### 3 · `guide:`:改它记什么
 
 ```
-🧵 1  @arch guide: 只记 DB 侧结论,排期讨论跳过
+🧵 1  @canopy guide: 只记 DB 侧结论,排期讨论跳过
       → 追加到这个节点的 guide.md,下一 tick 生效
       → 只回一个 ✅ 表情,不发消息 —— thread 是给人读的
 ```
@@ -106,13 +106,13 @@ cron ──► 遍历每个 active 节点
 ### 4 · `fork`:子问题分出去,自带 owner
 
 ```
-🧵 1  @arch fork 慢查询定位
+🧵 1  @canopy fork 慢查询定位
 
   #pay ────────────────────────────────────────────────────────────────
    🧵 1699.0001  “支付超时”
-      └ [arch] 拆出 `1.a` — 慢查询定位 …        fork-announce.md
-   🧵 1701.0500  “慢查询定位”                   新 thread,E/F 在这儿聊
-   📌 1701.0501  🌳 慢查询定位 · `1.a`           feed-fork.md
+      └ [canopy] 拆出 `1.a` — 慢查询定位 …      fork-announce.md
+   🧵 1701.0500  “慢查询定位”                    新 thread,E/F 在这儿聊
+   📌 1701.0501  🌳 慢查询定位 · `1.a`            feed-fork.md
   ──────────────────────────────────────────────────────────────────────
    tree.json: 1 ──► 1.a          边是 fork 当场写下的,不靠事后推断
 ```
@@ -126,15 +126,15 @@ $ /canopy tree                       不带参数 → 所有根,depth 0
   pay-timeout  支付超时     active   4 active / 1 paused / 2 done   🔒1
 
 $ /canopy tree pay-timeout           点名一个根 → depth all
-  1        支付超时         active   @arch
-  ├ 1.a    慢查询定位       active   @arch
-  │ └ 1.a.i  索引方案       active   @qa     🔒 worker 正在跑
-  └ 1.b    重试风暴         paused
+  1        支付超时         active   A君
+  ├ 1.a    慢查询定位       active   E君    回话身份 @arch
+  │ └ 1.a.i  索引方案       active   F君    🔒 worker 正在跑
+  └ 1.b    重试风暴         paused   A君
 
 $ /canopy tree 1.a --depth 1         从哪儿开始、往下几层,是两个独立参数
   ↑ pay-timeout / 1                  面包屑,免得看丢位置
-  1.a      慢查询定位       active   @arch
-  └ 1.a.i  索引方案         active   @qa     ▸ 2 done
+  1.a      慢查询定位       active   E君    回话身份 @arch
+  └ 1.a.i  索引方案         active   F君    ▸ 2 done
 
 $ /canopy pause 1.b                  不盯了,feed 留着
 $ /canopy resume 1.b
@@ -144,9 +144,9 @@ $ /canopy canvas                     重新渲染,打印链接
 ### 6 · `return` / `ack return` / `done`:结论回灌给上一层
 
 ```
-🧵 1.a  @arch return           草稿发成一条新消息,只给 A君 看
-        @arch ack return   ──► 发进 🧵 1                    return-post.md
-        @arch done         ──► 1.a 的 feed 里发 status-change.md
+🧵 1.a  @canopy return         草稿发成一条新消息,只给 A君 看
+        @canopy ack return ──► 发进 🧵 1                  return-post.md
+        @canopy done       ──► 1.a 的 feed 里发 status-change.md
                                Canvas 上打勾
 ```
 
@@ -155,7 +155,7 @@ A君没点头之前,什么都不会进父 thread。
 ### 7 · feed 记歪了:`recalibrate`
 
 ```
-$ /canopy recalibrate 1        (或者在 thread 里:@arch recalibrate)
+$ /canopy recalibrate 1        (或者在 thread 里:@canopy recalibrate)
    分块读完整段历史 → 重建所有 feed 段落
    这是重的逃生口;日常靠的是每 tick 只改最后一段的便宜路径
 ```
