@@ -77,14 +77,17 @@ skill-root/                      # git, READ-ONLY at runtime, PR-able
   scripts/                       # cron-tick, reply tool, summarizer wrappers, entrypoints
   templates/
     profiles/*.md                # seed profiles (copied out on first use)
+    messages/<locale>/*.md       # seed Slack message templates, per language (en, zh)
     default-summarizer.md        # default feed prompt
     canvas.tmpl
 
 $CANOPY_DATA_HOME  (default ~/.canopy/)   # per-user, NOT in the repo
-  config.json                    # cron interval, slack token ref, data path
+  config.json                    # cron interval, slack token ref, data path, locale
   profiles/<agent>.md            # the user's real, editable global agents
+  messages/<locale>/*.md         # the user's real, editable message templates
   projects/<projId>/             # one per `track`
     tree.json
+    messages/*.md                # optional per-project overrides
     nodes/<channel>-<thread_ts>/
       state.json
       guide.md                   # summarizer guidance, append-only
@@ -94,9 +97,10 @@ $CANOPY_DATA_HOME  (default ~/.canopy/)   # per-user, NOT in the repo
 
 Scripts resolve data via `$CANOPY_DATA_HOME` (default `~/.canopy/`), overridable
 per-project with `--data-dir` (e.g. to sync/back up via a git-ignored folder).
-On first `track`/`agents`, if `profiles/` is empty, **copy the seeds** from
-`templates/profiles/` into the data home. From then on the user edits their copy;
-skill updates refresh the templates without clobbering user profiles.
+On first `track`/`agents`/`messages`, if `profiles/` or `messages/` is empty,
+**copy the seeds** from `templates/profiles/` and `templates/messages/` into the
+data home. From then on the user edits their copy; skill updates refresh the
+templates without clobbering the user's profiles or wording.
 
 Profiles are **global** (shared across all projects). Reply identity is chosen
 **per node** (`reply_as`), so 1.a can answer as `@arch` while 1.b answers as
@@ -143,17 +147,149 @@ an intermediate note to avoid context blowup — then rebuilds every segment and
 overwrites the whole feed in one pass. This is the heavy escape hatch; the
 segmented per-tick update is the cheap common path.
 
+## Message templates — every byte Canopy posts to Slack
+
+Observers never read `tree.json` or the Canvas source; they read the messages
+Canopy posts. Those messages are the product, so **none of their wording is
+hardcoded**. Every posting moment renders a template, and every template is
+user-editable and PR-able.
+
+| Moment | Template | Posted where |
+|---|---|---|
+| `track` | `feed-root.md` | channel — root checkpoint message |
+| …then | `track-announce.md` | the **raw thread** — tells the people already arguing there that it is now watched, and where the feed lives |
+| `fork` | `feed-fork.md` | channel — child checkpoint message |
+| …then | `fork-announce.md` | the **parent thread** — points everyone at the new thread so the sub-problem does not silently vanish |
+| summarizer appends a checkpoint | `feed-entry.md` | one entry inside the live segment |
+| active segment fills | `feed-segment.md` | header of the new segment |
+| …and the old one is sealed | `feed-sealed-footer.md` | pointer stamped onto the sealed segment |
+| worker replies in-thread (Loop A) | `reply.md` | the node's thread |
+| `return` | `return-draft.md` | new message, for A君's review only |
+| `ack return` | `return-post.md` | the **parent** thread |
+| `done` / `pause` / `untrack` | `status-change.md` | the node's feed |
+
+`guide:` gets an emoji reaction, not a message — steering the summarizer should
+not add noise to the thread everyone is reading.
+
+Each template file is **front matter + body**: `moment` names the posting moment,
+`vars` declares exactly which variables that moment provides, and the body is
+Slack mrkdwn. Rendering is variable substitution only — no logic, no arithmetic
+(hence `prev_segment_index` is passed in rather than computed).
+
+A body referencing a variable not in its `vars` is a **hard error at render
+time**, and the post is abandoned: better a failed tick in your log than
+`{{parent_permalink}}` posted verbatim into the channel your VP is reading. A
+declared variable that is legitimately empty (`reason`, or `entries` on a fresh
+feed) renders as nothing.
+
+### Wording style
+
+These messages land in a channel people are already busy in, so they read like a
+colleague, not a status system. **Lead with a verb, cut the nominalizations**:
+"Pin this message" over "Pinning is recommended"; "Split off `1.a`" over
+"A sub-problem has been created". Keep each message to a couple of lines — the
+checkpoint entries carry the content, the frame around them should disappear.
+
+### Locale
+
+Templates ship per language under `messages/<locale>/`, currently `en` and `zh`.
+`config.json` sets `"locale"` (default `en`), overridable per project at `track`
+time with `--locale`, because one person often tracks an English infra thread and
+a Chinese product thread from the same machine.
+
+Only the *frame* is localized. Checkpoint summaries come from the summarizer, so
+they follow whatever language the thread is speaking — which is exactly why the
+frame has to be switchable, otherwise every feed reads half-and-half.
+
+### Resolution
+
+Layered, first hit wins:
+
+```
+projects/<projId>/messages/<name>             # this project only (rare, e.g. a formal exec-facing tree)
+$CANOPY_DATA_HOME/messages/<locale>/<name>    # the user's edits   (the normal place to customize)
+skill-root/templates/messages/<locale>/<name> # shipped default    (read-only)
+```
+
+A project-level override wins regardless of locale — if you hand-wrote that
+message for that tree, you meant it.
+
+Same rule as profiles: seeds are **copied out on first `track`** (only the
+locales you actually use), so a skill update refreshes the shipped defaults
+without clobbering your wording.
+
 ## Commands
+
+### How to name a node (`<node>` in every command below)
+
+The canonical node id is `<channel>-<thread_ts>` — correct, stable, and
+**unusable by hand**. So every command that takes a `<node>` resolves it from
+any of these, in order:
+
+1. **Path alias** — `1`, `1.a`, `1.a.ii`, derived from each node's position
+   among its siblings in `tree.json`. This is the primary human handle and the
+   one `tree` prints. Aliases are *positional, not stored*: recomputed on every
+   render.
+2. **Unique title substring** — `tree 慢查询`.
+3. **Full or prefix node id** — `C0PAY-1699.0042`, for scripts and logs.
+
+A path alias is only meaningful **inside one project**, but the CLI is global —
+you normally have a few roots tracked at once. So a node ref may be qualified
+`<projId>:<alias>` (`pay-timeout:1.a`), and a bare alias resolves only if it hits
+exactly one node across all tracked projects.
+
+Ambiguous → refuse and print the candidates, qualified. Never guess which node
+the user meant; acting on the wrong node silently corrupts the tree.
+
+Path aliases are stable enough for a work session but **shift if a sibling is
+inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
 
 ### Local CLI — `/canopy <cmd>` (A君 → the agent)
 
-- `track <slackThreadLink>` — **main entrypoint.** Create the root node +
-  `tree.json`, post the root checkpoint message (linking raw thread + Canvas),
-  register the cron job, build the Canvas.
+- `track <slackThreadLink> [--locale <l>]` — **main entrypoint.** Create the root
+  node + `tree.json`, post the root checkpoint message (linking raw thread +
+  Canvas), **announce into the raw thread itself** so the people already
+  discussing there learn it is watched and where to follow, register the cron
+  job, build the Canvas.
+
+  The announce is not optional politeness: without it, a feed exists that the
+  actual participants never hear about, and A君 ends up pasting the link by hand
+  to everyone. It also doubles as the in-thread hint for `fork` / `guide:`, which
+  is how anyone but A君 discovers those commands exist.
 - `agents` — enter profile-edit mode: create / edit / delete global
   `profiles/*.md`.
-- `tree` / `status` — print the tree with each node's status / owner / lock
-  state. No arg → list all tracked projects; with a projId → one tree.
+- `messages` — review and edit the message templates above. No arg → list every
+  template with **which layer it resolved from** (shipped / user / project), so
+  you can see at a glance what you have already customized. `messages <name>`
+  opens that one for editing. `messages <name> --preview [<node>]` renders it
+  against a real node's state (or a seed fixture when no node is given) and
+  prints the exact text Slack would receive — **it posts nothing**. Preview
+  before `track`, not after your VP has read it.
+- `tree` / `status` — print status / owner / lock state. Two **orthogonal**
+  parameters: the argument picks *where to start*, `--depth` picks *how far
+  down*. A project has exactly one root, so **projId is just the human name for
+  that root**.
+
+  Where to start:
+  - no arg → every tracked root
+  - projId → that root
+  - node ref → that node, plus a one-line breadcrumb of its ancestors so you
+    never lose your place
+
+  How deep — `--depth`, counted from wherever you started:
+  - `0` → starting node(s) only, each as a single rollup line: title, its
+    projId/alias, and counts of `active` / `paused` / `done` descendants plus how
+    many currently hold a lock. **Default for the no-arg form** — a handful of
+    roots, nothing expanded: the daily dashboard.
+  - `N` → expand N levels; anything deeper collapses into a rollup on its
+    deepest visible ancestor.
+  - `all` → no cap. **Default once you name a projId or node** — you already
+    zoomed in, so expansion is what you asked for.
+
+  A collapsed line always carries its rollup counts, so a truncated branch is
+  visibly truncated and you can re-run one level deeper. Deep trees are the
+  normal case; the depth cap is what stops Canopy from re-creating the drowning
+  problem it exists to solve.
 - `pause <node>` / `resume <node>` — stop / restart watching a node.
 - `recalibrate <node>` — CLI form of Loop C.
 - `canvas` — force-regenerate and print the Canvas link.
@@ -163,8 +299,9 @@ segmented per-tick update is the cheap common path.
 
 - `fork <title>` — open a sub-problem. The **current thread_ts becomes parent**;
   add the edge to `tree.json`, post a new root checkpoint message in the same
-  channel (linking the parent message + Canvas). The edge is written at fork
-  time — never inferred later.
+  channel (linking the parent message + Canvas), and reply in the parent thread
+  pointing at the new thread. The edge is written at fork time — never inferred
+  later.
 - `return` — draft a summary to a **new message** for A君 to review before it
   goes up.
 - `ack return` — confirm; post the summary back into the **parent thread** as
