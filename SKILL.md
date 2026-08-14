@@ -84,28 +84,38 @@ only in the argv they build:
 
 ```
 codex   codex exec --skip-git-repo-check --ephemeral \
-          -C <node dir> --sandbox workspace-write \
-          -c sandbox_workspace_write.network_access=true \
+          --dangerously-bypass-approvals-and-sandbox \
+          -C <node dir> \
           -o <node dir>/last-message.txt \
-          -                              # `-` == read the prompt from stdin
+          -                                 # `-` == read the prompt from stdin
 
-claude  claude -p --output-format text   # no prompt arg == read it from stdin
-                                         # cwd is the node dir
+claude  claude -p --output-format text \
+          --dangerously-skip-permissions    # no prompt arg == read from stdin
+                                            # cwd is the node dir
 ```
 
-Why those codex flags, since each one is load-bearing:
+**Workers run with no sandbox and no approval prompts.** Deliberate: a worker
+woken by cron has no TTY, so any approval prompt is a hang, and a sandbox that
+blocks network or writes outside the node dir turns a woken worker into one that
+can neither post to Slack nor advance its own `cursor` — it fails silently and
+the tick log says nothing useful. Full access is the cost of running unattended.
 
-- `--sandbox workspace-write` — the worker writes `state.json`, `guide.md`,
-  `transcript.jsonl`; `read-only` would break every write path.
-- `-c sandbox_workspace_write.network_access=true` — workspace-write blocks
-  network by default, and a worker that can't reach Slack can't post the reply
-  it was woken up to write. Codex silently ignores an unknown `-c` key, so a typo
-  here yields a worker that runs, fails to post, and reports nothing useful; add
-  `--strict-config` while you are editing these flags and it errors on the typo
-  instead.
+What that means in practice, so nobody discovers it by accident: **the model gets
+the same reach over this machine as the person who installed Canopy**, and it
+gets it on a timer, triggered by whatever someone typed in a Slack thread. Treat
+a tracked thread as an input channel into your shell. Two guardrails that are
+worth keeping: the tick only wakes a full worker on an explicit `@agent` mention
+(chatter gets the summarizer, which has no such reach), and profiles say what an
+agent is for. Neither is a security boundary. If you need one, put the runner
+behind your own `cmd` wrapper — a container, a separate user account, a remote
+box — which is exactly what the `cmd` escape hatch is for.
+
+The rest of the codex flags:
+
 - `--skip-git-repo-check` — `$CANOPY_DATA_HOME` is not a git repo.
 - `--ephemeral` — no session files; the node directory on disk is already the
   source of truth, and per-tick session rollouts would pile up forever.
+- `-C <node dir>` — the worker's working root is the node it was woken for.
 - `-o <file>` — the worker's last message, read back by the tick for logging.
 
 A custom `cmd` gets the prompt on stdin too. Anything else — API keys in argv,

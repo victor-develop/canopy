@@ -39,6 +39,18 @@ CLI worker 去处理,给每个节点维护一条 checkpoint feed,再把整棵树
 把 runner 解析成绝对路径存进 `config.json`,解析不到就拒绝注册 cron —— 免得树看着在被
 盯,其实一次都没 tick 过。
 
+worker 跑在**无 sandbox、无审批**模式下:
+
+```
+codex   codex exec --dangerously-bypass-approvals-and-sandbox …
+claude  claude -p --dangerously-skip-permissions …
+```
+
+cron 叫醒的进程没有 TTY,弹审批就是卡死;sandbox 一挡网络、或挡住节点目录外的写,
+worker 就既发不出 Slack 也推不动自己的 `cursor`,而且不报错。代价说清楚:模型在这台
+机器上的权限跟装 Canopy 的人一样大,而触发它的是别人在 Slack thread 里打的字。要隔离,
+就用 `cmd` 那条口子把 runner 包进容器 / 独立账号 / 另一台机器。
+
 完整设计看 [`SKILL.md`](./SKILL.md):三个 loop、两层 cron、runner、代码与数据分离、
 命令集、状态 schema。
 
