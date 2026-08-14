@@ -237,7 +237,8 @@ user-editable and PR-able.
 |---|---|---|
 | `track` | `feed-root.md` | channel — root checkpoint message |
 | …then | `track-announce.md` | the **raw thread** — tells the people already arguing there that it is now watched, and where the feed lives |
-| `fork` | `feed-fork.md` | channel — child checkpoint message |
+| `fork` | `fork-thread.md` | channel — the **new top-level message** that opens the child thread people will actually argue in |
+| …then | `feed-fork.md` | channel — child checkpoint message |
 | …then | `fork-announce.md` | the **parent thread** — points everyone at the new thread so the sub-problem does not silently vanish |
 | summarizer appends a checkpoint | `feed-entry.md` | one entry inside the live segment |
 | active segment fills | `feed-segment.md` | header of the new segment |
@@ -442,6 +443,25 @@ Whenever tree structure or a node's status changes, regenerate the Canvas from
 `templates/canvas.tmpl`: a clickable tree/graph where each node links its raw
 thread permalink and its feed message, and `done` nodes are ticked, `paused`/
 `untracked` greyed. This is A君's fast navigation surface across the whole tree.
+
+`slackcli` can read canvases but not write one, so Canopy renders the file
+(`projects/<projId>/canvas.md`) and uses it as the link target until you paste
+the real Canvas URL in with `canopy canvas --link <url>`; from then on every
+message that carries `canvas_permalink` points at the Canvas.
+
+## Implementation
+
+`scripts/` is the runtime: Python 3, stdlib only, `python3 -m pytest` for the
+tests. `scripts/README.md` maps module to responsibility. Two rules there are
+design decisions, not implementation details:
+
+- **Structural commands never reach the model.** `fork`, `done`, `guide:`,
+  `return`, `ack return` are parsed from the message and executed as code. A
+  fork writes an edge into `tree.json`; a hallucinated edge is a corrupted tree
+  nobody notices for a week. The model is asked for replies and summaries only.
+- **The gate is testable and tested.** The tick's zero-LLM path is asserted by
+  handing it a worker that raises if it is ever called, so "idle trees are free"
+  can't silently regress into "idle trees cost a summarizer each".
 
 ## Operating principles
 

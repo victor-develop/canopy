@@ -114,10 +114,12 @@ cron ──► 遍历每个 active 节点
            ├ 有 lock 文件 ?        ──是──► 跳过,下一 tick 再来
            │
            └ 新消息里 @ 了 agent ?
-                ├ 否 ──► 轻量 summarizer ──► 够格就往当前 feed 段
-                │                            追一条 feed-entry.md
-                └ 是 ──► 完整 worker     ──► 在 thread 里回 reply.md
-                                             推进 cursor,释放 lock
+                ├ 否 ──────► 轻量 summarizer ──► 够格就往当前 feed 段
+                │                                追一条 feed-entry.md
+                ├ 是,且是命令 ► 直接跑代码 ──► fork / done / guide: …
+                │                                (结构性改动不经过模型)
+                └ 是,是问句 ─► 完整 worker ──► 在 thread 里回 reply.md
+                                                 推进 cursor,释放 lock
 ```
 
 ### 3 · `guide:`:改它记什么
@@ -188,13 +190,20 @@ $ /canopy recalibrate 1        (或者在 thread 里:@canopy recalibrate)
 ### 8 · `untrack`:收树
 
 ```
-$ /canopy untrack 1            归档、注销 cron、Canvas 上置灰
+$ /canopy untrack 1            归档、不再盯它、Canvas 上置灰
+                               (cron 是全局一条,不跟着删)
 ```
 
 ## 现状
 
-设计已冻结,`SKILL.md` 是唯一事实来源。`scripts/` 和 `templates/` 骨架搭好了,内容还在
-往里填。
+设计已冻结,`SKILL.md` 是唯一事实来源。`scripts/` 已经实现:Python 3、只用标准库(tick
+跑在 cron 里,少一个依赖就是一棵树悄悄不再被盯),`python3 -m pytest` 跑 130+ 个测试,
+不连网、不连 Slack、不调模型。模块分工见
+[`scripts/README.md`](./scripts/README.md)。
+
+还没做的:Slack Canvas 只能读不能写(`slackcli` 没这个命令),所以 Canvas 先渲染成
+`projects/<projId>/canvas.md`,把真实 Canvas 链接用 `canopy canvas --link <url>`
+存进来之后,消息里的 `canvas_permalink` 才指向 Slack。
 
 ## License
 
