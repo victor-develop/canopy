@@ -1,0 +1,214 @@
+"""The CLI surface, driven the way a user drives it: argv in, exit code out."""
+
+import json
+
+import pytest
+
+from canopy import cli, config as config_mod, ops, paths, store
+
+
+@pytest.fixture
+def cli_env(dh, slack, repo, monkeypatch):
+    """Wire every `_ctx()` in the CLI to the fake Slack and this data home."""
+    cfg = config_mod.load(dh)
+    cfg["slack_workspace_url"] = "https://example.slack.com"
+    config_mod.save(dh, cfg)
+
+    def fake_ctx(args):
+        return ops.Ctx(dh, cfg=config_mod.load(dh), slack=slack, root=repo,
+                       now=lambda: 1700000000.0)
+
+    monkeypatch.setattr(cli, "_ctx", fake_ctx)
+    return {"dh": dh, "slack": slack}
+
+
+def run(argv):
+    return cli.main(argv)
+
+
+def test_track_registers_cron_and_prints_links(cli_env, capsys, monkeypatch):
+    slack = cli_env["slack"]
+    slack.add("C0PAY", "1699000001.000100", "1699000001.000100", "U1", "支付超时")
+    installed = {}
+    monkeypatch.setattr(cli.runner_mod, "resolve_path", lambda r: "/abs/codex")
+    monkeypatch.setattr(cli.cron, "install",
+                        lambda cmd, mins, data_home=None: installed.update(
+                            cmd=cmd, mins=mins))
+
+    code = run(["track", "https://example.slack.com/archives/C0PAY/p1699000001000100",
+                "--title", "支付超时", "--project", "pay"])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "tracked 支付超时 as `pay`" in out
+    assert installed["cmd"].endswith("canopy_main.py tick")
+    # The absolute runner path is what cron will actually be able to exec.
+    assert config_mod.load(cli_env["dh"])["runner_path"] == "/abs/codex"
+
+
+def test_track_refuses_when_the_runner_is_not_on_path(cli_env, monkeypatch, capsys):
+    slack = cli_env["slack"]
+    slack.add("C0PAY", "1699000001.000100", "1699000001.000100", "U1", "支付超时")
+
+    def missing(_runner):
+        from canopy.errors import RunnerError
+        raise RunnerError("cannot find 'codex' on PATH")
+
+    monkeypatch.setattr(cli.runner_mod, "resolve_path", missing)
+    code = run(["track", "https://example.slack.com/archives/C0PAY/p1699000001000100",
+                "--project", "pay"])
+    assert code == 1
+    assert "No cron job was registered" in capsys.readouterr().err
+
+
+def track_one(cli_env, project="pay", channel="C0PAY", ts="1699000001.000100",
+              title="支付超时"):
+    cli_env["slack"].add(channel, ts, ts, "U1", title)
+    link = "https://example.slack.com/archives/%s/p%s" % (channel, ts.replace(".", ""))
+    return run(["track", link, "--title", title, "--project", project, "--no-cron"])
+
+
+def test_tree_no_arg_is_the_dashboard(cli_env, capsys):
+    track_one(cli_env)
+    capsys.readouterr()
+    run(["tree"])
+    lines = [l for l in capsys.readouterr().out.splitlines() if l.strip()]
+    assert len(lines) == 1 and "pay" in lines[0]
+
+
+def test_tree_named_project_expands(cli_env, capsys):
+    track_one(cli_env)
+    ctx = cli._ctx(None)
+    ops.fork(ctx, "pay", ctx.tree("pay").root, "慢查询定位")
+    capsys.readouterr()
+    run(["tree", "pay"])
+    out = capsys.readouterr().out
+    assert "1.a" in out and "慢查询定位" in out
+
+
+def test_tree_depth_zero_collapses(cli_env, capsys):
+    track_one(cli_env)
+    ctx = cli._ctx(None)
+    ops.fork(ctx, "pay", ctx.tree("pay").root, "慢查询定位")
+    capsys.readouterr()
+    run(["tree", "pay", "--depth", "0"])
+    assert "慢查询定位" not in capsys.readouterr().out
+
+
+def test_pause_resume_and_untrack(cli_env, capsys):
+    track_one(cli_env)
+    run(["pause", "pay"])
+    ctx = cli._ctx(None)
+    assert ctx.tree("pay").node(ctx.tree("pay").root)["status"] == "paused"
+    run(["resume", "pay"])
+    assert cli._ctx(None).tree("pay").node(ctx.tree("pay").root)["status"] == "active"
+    run(["untrack", "pay", "--reason", "收了"])
+    assert cli._ctx(None).tree("pay").node(ctx.tree("pay").root)["status"] == "untracked"
+
+
+def test_ambiguous_ref_refuses_and_lists_candidates(cli_env, capsys):
+    track_one(cli_env, project="pay")
+    track_one(cli_env, project="edd", channel="C0EDD", ts="1699000002.000100",
+              title="EDD 不准")
+    capsys.readouterr()
+    code = run(["pause", "1"])
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "pay:1" in err and "edd:1" in err
+
+
+def test_agents_lists_the_shipped_default(cli_env, capsys):
+    track_one(cli_env)
+    capsys.readouterr()
+    run(["agents"])
+    out = capsys.readouterr().out
+    assert "canopy" in out and "(default)" in out
+
+
+def test_agents_create_and_delete(cli_env, capsys):
+    track_one(cli_env)
+    run(["agents", "--create", "arch"])
+    assert (paths.profiles_dir(cli_env["dh"]) / "arch.md").exists()
+    run(["agents", "--delete", "arch"])
+    assert not (paths.profiles_dir(cli_env["dh"]) / "arch.md").exists()
+
+
+def test_agents_refuses_to_delete_the_default(cli_env, capsys):
+    track_one(cli_env)
+    capsys.readouterr()
+    assert run(["agents", "--delete", "canopy"]) == 1
+    assert "default_agent" in capsys.readouterr().err
+
+
+def test_messages_lists_layers(cli_env, capsys):
+    track_one(cli_env)
+    capsys.readouterr()
+    run(["messages"])
+    out = capsys.readouterr().out
+    assert "feed-root.md" in out
+    assert "user" in out            # seeded into the data home by track
+
+
+def test_messages_preview_posts_nothing(cli_env, capsys):
+    track_one(cli_env)
+    before = len(cli_env["slack"].posted)
+    capsys.readouterr()
+    run(["messages", "track-announce.md", "--preview"])
+    out = capsys.readouterr().out
+    assert "{{" not in out and out.strip()
+    assert len(cli_env["slack"].posted) == before
+
+
+def test_messages_preview_against_a_real_node(cli_env, capsys):
+    track_one(cli_env)
+    capsys.readouterr()
+    run(["messages", "feed-root.md", "--preview", "--node", "pay"])
+    assert "支付超时" in capsys.readouterr().out
+
+
+def test_reply_posts_as_the_agent(cli_env, capsys):
+    track_one(cli_env)
+    capsys.readouterr()
+    run(["reply", "pay", "--text", "我看了下日志"])
+    posted = cli_env["slack"].posted[-1]
+    assert posted["text"].startswith("*[canopy]*")
+
+
+def test_tick_prints_a_row_per_active_node(cli_env, capsys):
+    track_one(cli_env)
+    capsys.readouterr()
+    run(["tick", "--json"])
+    rows = json.loads(capsys.readouterr().out)
+    assert rows[0]["verdict"] == "no-new"
+
+
+def test_config_set_and_show(cli_env, capsys):
+    run(["config", "--set", "cron_interval_minutes=10", "--set", "locale=en"])
+    cfg = json.loads(capsys.readouterr().out)
+    assert cfg["cron_interval_minutes"] == 10 and cfg["locale"] == "en"
+
+
+def test_canvas_stores_the_link(cli_env, capsys):
+    track_one(cli_env)
+    capsys.readouterr()
+    run(["canvas", "pay", "--link", "https://example.slack.com/canvas/F1"])
+    out = capsys.readouterr().out
+    assert "https://example.slack.com/canvas/F1" in out
+
+
+def test_unknown_ref_exits_nonzero(cli_env, capsys):
+    track_one(cli_env)
+    capsys.readouterr()
+    assert run(["pause", "没有这个节点"]) == 1
+
+
+def test_agents_on_a_fresh_install_seeds_and_lists(cli_env, capsys):
+    """Seeds land on first `agents`, not only on first `track`."""
+    run(["agents"])
+    out = capsys.readouterr().out
+    assert "canopy" in out and "(default)" in out
+
+
+def test_messages_on_a_fresh_install_seeds(cli_env, capsys):
+    run(["messages"])
+    out = capsys.readouterr().out
+    assert "feed-root.md" in out and "user" in out

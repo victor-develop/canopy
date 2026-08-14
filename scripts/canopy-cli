@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# `/canopy …` shim: no install step, no virtualenv, nothing to keep in sync.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "${CANOPY_PYTHON:-python3}" "$here/canopy_main.py" "$@"

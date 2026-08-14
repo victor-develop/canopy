@@ -1,7 +1,8 @@
 # canopy
 
 把发散的 Slack 讨论整理成一棵能导航的**子问题树**,每个节点带一条自己的
-**checkpoint feed**。一个 Claude skill,靠 `cron` + `claude -p` 离线跑,没有常驻进程。
+**checkpoint feed**。一个 skill,靠 `cron` 加一个无头 CLI 离线跑(默认 `codex exec`,
+`claude -p` 也支持),没有常驻进程。
 
 ## 要解决什么
 
@@ -14,9 +15,17 @@ Slack 里的活是按树长的。A君在一个 thread 里聊问题 1,聊到一�
 3. **兜底的人没法导航** —— A君要把每个子节点、子子节点都推到收口,手上却没有一个
    能横着看全树的界面。
 
-Canopy 把这棵树维护在旁边:盯每个活跃节点的新消息,消息里 `@` 了 agent 就派
-`claude -p` worker 处理,给每个节点维护一条 checkpoint feed,再把整棵树渲染成可点的
-Canvas。
+Canopy 把这棵树维护在旁边:盯每个活跃节点的新消息,消息里 `@` 了 agent 就派一个无头
+CLI worker 去处理,给每个节点维护一条 checkpoint feed,再把整棵树渲染成可点的 Canvas。
+
+### 一个人用也成立
+
+树里不一定要有别人。把 Slack 当自己的工作台:一条 thread 一个问题,想到的子问题
+`@canopy fork` 出去各自成 thread,feed 就是这条线的进度条,Canvas 是回来接着干时的入口。
+
+区别只在于旁观者是谁 —— 团队场景里是等结论的人,个人场景里是三天后的自己。同时压着五六
+件事、每件隔几天才回来一次的时候,读 feed 比把 thread 从头翻一遍快:feed 里只有决定、
+结果、卡在哪,聊过程的部分 summarizer 已经扔掉了。
 
 ## 怎么跑的
 
@@ -26,8 +35,33 @@ Canvas。
 没有就起**轻量 summarizer**,只更新 feed。worker 从磁盘冷启动,干完活推进 `cursor`、
 释放节点锁、退出。中途崩了也不丢:下一 tick 从 `cursor` 重新拉。
 
-完整设计看 [`SKILL.md`](./SKILL.md):三个 loop、两层 cron、代码与数据分离、命令集、
-状态 schema。
+跑 worker 的是哪个 CLI,由 `config.json` 的 `runner` 决定,默认 `codex`:
+
+```jsonc
+{ "runner": "codex" }                                // codex exec,默认
+{ "runner": "claude" }                               // claude -p
+{ "runner": { "cmd": ["my-wrapper", "--flag"] } }    // 自己包一层
+```
+
+两个都是 prompt 走 stdin、结果走 stdout、跑完退出,所以换 runner 只改一行配置。cron
+的 `PATH` 很干净,`codex` 这类装在 mise / nvm 底下的二进制它看不见,所以 `track` 会先
+把 runner 解析成绝对路径存进 `config.json`,解析不到就拒绝注册 cron —— 免得树看着在被
+盯,其实一次都没 tick 过。
+
+worker 跑在**无 sandbox、无审批**模式下:
+
+```
+codex   codex exec --dangerously-bypass-approvals-and-sandbox …
+claude  claude -p --dangerously-skip-permissions …
+```
+
+cron 叫醒的进程没有 TTY,弹审批就是卡死;sandbox 一挡网络、或挡住节点目录外的写,
+worker 就既发不出 Slack 也推不动自己的 `cursor`,而且不报错。代价说清楚:模型在这台
+机器上的权限跟装 Canopy 的人一样大,而触发它的是别人在 Slack thread 里打的字。要隔离,
+就用 `cmd` 那条口子把 runner 包进容器 / 独立账号 / 另一台机器。
+
+完整设计看 [`SKILL.md`](./SKILL.md):三个 loop、两层 cron、runner、代码与数据分离、
+命令集、状态 schema。
 
 ## 命令
 
@@ -89,10 +123,12 @@ cron ──► 遍历每个 active 节点
            ├ 有 lock 文件 ?        ──是──► 跳过,下一 tick 再来
            │
            └ 新消息里 @ 了 agent ?
-                ├ 否 ──► 轻量 summarizer ──► 够格就往当前 feed 段
-                │                            追一条 feed-entry.md
-                └ 是 ──► 完整 worker     ──► 在 thread 里回 reply.md
-                                             推进 cursor,释放 lock
+                ├ 否 ──────► 轻量 summarizer ──► 够格就往当前 feed 段
+                │                                追一条 feed-entry.md
+                ├ 是,且是命令 ► 直接跑代码 ──► fork / done / guide: …
+                │                                (结构性改动不经过模型)
+                └ 是,是问句 ─► 完整 worker ──► 在 thread 里回 reply.md
+                                                 推进 cursor,释放 lock
 ```
 
 ### 3 · `guide:`:改它记什么
@@ -163,13 +199,20 @@ $ /canopy recalibrate 1        (或者在 thread 里:@canopy recalibrate)
 ### 8 · `untrack`:收树
 
 ```
-$ /canopy untrack 1            归档、注销 cron、Canvas 上置灰
+$ /canopy untrack 1            归档、不再盯它、Canvas 上置灰
+                               (cron 是全局一条,不跟着删)
 ```
 
 ## 现状
 
-设计已冻结,`SKILL.md` 是唯一事实来源。`scripts/` 和 `templates/` 骨架搭好了,内容还在
-往里填。
+设计已冻结,`SKILL.md` 是唯一事实来源。`scripts/` 已经实现:Python 3、只用标准库(tick
+跑在 cron 里,少一个依赖就是一棵树悄悄不再被盯),`python3 -m pytest` 跑 130+ 个测试,
+不连网、不连 Slack、不调模型。模块分工见
+[`scripts/README.md`](./scripts/README.md)。
+
+还没做的:Slack Canvas 只能读不能写(`slackcli` 没这个命令),所以 Canvas 先渲染成
+`projects/<projId>/canvas.md`,把真实 Canvas 链接用 `canopy canvas --link <url>`
+存进来之后,消息里的 `canvas_permalink` 才指向 Slack。
 
 ## License
 

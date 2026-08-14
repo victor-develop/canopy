@@ -9,7 +9,8 @@ description: >-
   on: /canopy, "track this thread", "fork a sub-problem", "checkpoint feed",
   "problem tree", "who's the owner of this sub-thread", and any request to watch
   a Slack thread and summarize progress for observers. Canopy runs off-line via
-  cron + `claude -p`; it never keeps a long-lived process.
+  cron plus a headless coding CLI — `codex exec` by default, `claude -p` also
+  supported; it never keeps a long-lived process.
 ---
 
 # Canopy
@@ -31,14 +32,14 @@ one level of thread. Three pains fall out:
 
 Canopy is a skill A君's local agent runs. It maintains the tree off to the side,
 watches each active node for new messages, dispatches `@agent` mentions to
-`claude -p` workers, keeps a curated checkpoint feed per node, and renders a
-clickable Canvas of the whole tree.
+headless CLI workers (`codex exec` by default), keeps a curated checkpoint feed
+per node, and renders a clickable Canvas of the whole tree.
 
 ## Core architecture: two-tier cron, nothing long-lived
 
 Canopy has **no daemon**. All state lives on disk. A cron job fires every N
 minutes and runs a cheap gate; only when there is real work does it spend tokens
-on `claude -p`. This is deliberate — a cold-start-from-disk worker is crash-safe
+on a worker. This is deliberate — a cold-start-from-disk worker is crash-safe
 (if it dies, next tick re-pulls from the cursor), naturally serializes via a lock
 file, and never leaks a zombie process when the desktop sleeps or reboots.
 
@@ -51,8 +52,8 @@ cron tick (plain shell + slackcli, ZERO LLM):
     if latest_ts <= state.cursor:  continue            # no new msgs → skip, no LLM
     if node lock exists:           continue            # previous tick still running
     grep new messages for `@<agent>` mentions
-      → has mention:  spawn FULL agent worker  (claude -p, profile + node state)
-      → no mention:   spawn LIGHT summarizer   (claude -p, small prompt, feed only)
+      → has mention:  spawn FULL agent worker  (runner, profile + node state)
+      → no mention:   spawn LIGHT summarizer   (runner, small prompt, feed only)
 ```
 
 The gate matters: **nodes with no new messages never touch an LLM.** Idle trees
@@ -65,6 +66,74 @@ worker overruns one tick, the next tick sees the lock and skips that node this
 round — new messages just wait and get picked up next tick (accepted: no queue,
 cursor re-pull covers it). Guard against dead locks with a staleness timeout.
 
+## The runner — which CLI actually runs a worker
+
+Every worker (full agent, light summarizer, `recalibrate`) is one headless run of
+a coding CLI. Which CLI is a config value, not something baked into the scripts:
+
+```jsonc
+// $CANOPY_DATA_HOME/config.json
+{ "runner": "codex" }        // default
+{ "runner": "claude" }
+{ "runner": { "cmd": ["my-wrapper", "--flag"] } }   // escape hatch
+```
+
+**Default is `codex`.** Both supported runners read the prompt from stdin, print
+to stdout, and exit — that is all Canopy needs from them, so the two paths differ
+only in the argv they build:
+
+```
+codex   codex exec --skip-git-repo-check --ephemeral \
+          --dangerously-bypass-approvals-and-sandbox \
+          -C <node dir> \
+          -o <node dir>/last-message.txt \
+          -                                 # `-` == read the prompt from stdin
+
+claude  claude -p --output-format text \
+          --dangerously-skip-permissions    # no prompt arg == read from stdin
+                                            # cwd is the node dir
+```
+
+**Workers run with no sandbox and no approval prompts.** Deliberate: a worker
+woken by cron has no TTY, so any approval prompt is a hang, and a sandbox that
+blocks network or writes outside the node dir turns a woken worker into one that
+can neither post to Slack nor advance its own `cursor` — it fails silently and
+the tick log says nothing useful. Full access is the cost of running unattended.
+
+What that means in practice, so nobody discovers it by accident: **the model gets
+the same reach over this machine as the person who installed Canopy**, and it
+gets it on a timer, triggered by whatever someone typed in a Slack thread. Treat
+a tracked thread as an input channel into your shell. Two guardrails that are
+worth keeping: the tick only wakes a full worker on an explicit `@agent` mention
+(chatter gets the summarizer, which has no such reach), and profiles say what an
+agent is for. Neither is a security boundary. If you need one, put the runner
+behind your own `cmd` wrapper — a container, a separate user account, a remote
+box — which is exactly what the `cmd` escape hatch is for.
+
+The rest of the codex flags:
+
+- `--skip-git-repo-check` — `$CANOPY_DATA_HOME` is not a git repo.
+- `--ephemeral` — no session files; the node directory on disk is already the
+  source of truth, and per-tick session rollouts would pile up forever.
+- `-C <node dir>` — the worker's working root is the node it was woken for.
+- `-o <file>` — the worker's last message, read back by the tick for logging.
+
+A custom `cmd` gets the prompt on stdin too. Anything else — API keys in argv,
+a runner that needs an interactive TTY — is out of scope; the whole point is that
+cron can start it with no terminal attached.
+
+**Resolve the runner to an absolute path.** cron runs with a minimal `PATH` and
+no shell profile, so a version-manager install (mise, nvm, asdf — `codex` usually
+lands in one) is invisible to it. `track` resolves the binary once
+(`command -v <runner>`) and stores the absolute path in `config.json`. If it
+can't resolve, `track` refuses to register the cron job — better than a tree that
+looks watched and silently never ticks.
+
+`runner` is global in `config.json`. It is not per node: a tree where 1.a thinks
+with a different model than 1.b is a debugging problem nobody wants at 3am.
+Model choice inside a runner is that runner's own config (`~/.codex/config.toml`,
+`CLAUDE_*` env), which Canopy does not manage.
+
 ## Code / data separation — never write into the skill
 
 The skill is a git repo that gets installed by many people and PR'd back.
@@ -74,7 +143,7 @@ or contributed back. All read/write goes to a per-user data home.
 ```
 skill-root/                      # git, READ-ONLY at runtime, PR-able
   SKILL.md
-  scripts/                       # cron-tick, reply tool, summarizer wrappers, entrypoints
+  scripts/                       # cron-tick, runner wrapper, reply tool, summarizer, entrypoints
   templates/
     profiles/*.md                # seed profiles — canopy.md is the default agent
     messages/<locale>/*.md       # seed Slack message templates, per language (zh, en)
@@ -83,7 +152,7 @@ skill-root/                      # git, READ-ONLY at runtime, PR-able
 
 $CANOPY_DATA_HOME  (default ~/.canopy/)   # per-user, NOT in the repo
   config.json                    # cron interval, slack token ref, data path,
-                                 #   locale, default_agent
+                                 #   locale, default_agent, runner
   profiles/<agent>.md            # the user's real, editable global agents
   messages/<locale>/*.md         # the user's real, editable message templates
   projects/<projId>/             # one per `track`
@@ -168,7 +237,8 @@ user-editable and PR-able.
 |---|---|---|
 | `track` | `feed-root.md` | channel — root checkpoint message |
 | …then | `track-announce.md` | the **raw thread** — tells the people already arguing there that it is now watched, and where the feed lives |
-| `fork` | `feed-fork.md` | channel — child checkpoint message |
+| `fork` | `fork-thread.md` | channel — the **new top-level message** that opens the child thread people will actually argue in |
+| …then | `feed-fork.md` | channel — child checkpoint message |
 | …then | `fork-announce.md` | the **parent thread** — points everyone at the new thread so the sub-problem does not silently vanish |
 | summarizer appends a checkpoint | `feed-entry.md` | one entry inside the live segment |
 | active segment fills | `feed-segment.md` | header of the new segment |
@@ -373,6 +443,25 @@ Whenever tree structure or a node's status changes, regenerate the Canvas from
 `templates/canvas.tmpl`: a clickable tree/graph where each node links its raw
 thread permalink and its feed message, and `done` nodes are ticked, `paused`/
 `untracked` greyed. This is A君's fast navigation surface across the whole tree.
+
+`slackcli` can read canvases but not write one, so Canopy renders the file
+(`projects/<projId>/canvas.md`) and uses it as the link target until you paste
+the real Canvas URL in with `canopy canvas --link <url>`; from then on every
+message that carries `canvas_permalink` points at the Canvas.
+
+## Implementation
+
+`scripts/` is the runtime: Python 3, stdlib only, `python3 -m pytest` for the
+tests. `scripts/README.md` maps module to responsibility. Two rules there are
+design decisions, not implementation details:
+
+- **Structural commands never reach the model.** `fork`, `done`, `guide:`,
+  `return`, `ack return` are parsed from the message and executed as code. A
+  fork writes an edge into `tree.json`; a hallucinated edge is a corrupted tree
+  nobody notices for a week. The model is asked for replies and summaries only.
+- **The gate is testable and tested.** The tick's zero-LLM path is asserted by
+  handing it a worker that raises if it is ever called, so "idle trees are free"
+  can't silently regress into "idle trees cost a summarizer each".
 
 ## Operating principles
 
