@@ -65,6 +65,19 @@ worker 就既发不出 Slack 也推不动自己的 `cursor`,而且不报错。�
 完整设计看 [`SKILL.md`](./SKILL.md):三个 loop、两层 cron、runner、代码与数据分离、
 命令集、状态 schema。
 
+## 依赖的 slackcli 版本
+
+所有 Slack 调用都走 [`slackcli`](https://github.com/shaharia-lab/slackcli)。
+请用 [victor-develop/slackcli](https://github.com/victor-develop/slackcli/releases)
+的 **0.8.0-canopy.1** 或更新版本,或任何带了 `parse=none` 修复的上游版本
+([上游 issue #106](https://github.com/shaharia-lab/slackcli/issues/106))。
+
+上游 0.8.0 调 `chat.update` 时没传 `parse=none`,Slack 会把文本转义,
+`<url|label>` 存成 `&lt;url|label&gt;`。feed 每追一条 checkpoint 就编辑一次那条
+消息,所以在没打补丁的 CLI 上,第一条 checkpoint 之后 feed 里的链接全变成字面文字。
+canopy 不会因此崩:把 `slack_cli_escapes_on_edit` 设成 `true`,它会把带标签的链接
+降级成裸 URL(还能点,但标签没了)。用修好的 CLI 就设成 `false`。
+
 ## 命令
 
 本地 CLI(`/canopy …`):`track`、`agents`、`messages`、`tree`/`status`、

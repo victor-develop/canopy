@@ -134,6 +134,26 @@ with a different model than 1.b is a debugging problem nobody wants at 3am.
 Model choice inside a runner is that runner's own config (`~/.codex/config.toml`,
 `CLAUDE_*` env), which Canopy does not manage.
 
+## The Slack CLI it needs
+
+Canopy shells out to [`slackcli`](https://github.com/shaharia-lab/slackcli) for
+every Slack call. **Use 0.8.0-canopy.1 or later from
+[victor-develop/slackcli](https://github.com/victor-develop/slackcli/releases),
+or any upstream build that carries the `parse=none` fix**
+([upstream issue #106](https://github.com/shaharia-lab/slackcli/issues/106)).
+
+Upstream 0.8.0 calls `chat.update` without `parse=none`, so Slack escapes the
+text and `<url|label>` is stored as `&lt;url|label&gt;`. Every checkpoint
+appended to a feed edits that message, so on an unpatched CLI the feed's links
+all turn into literal text after the first checkpoint. Canopy does not crash on
+such a CLI — set `"slack_cli_escapes_on_edit": true` and it degrades labelled
+links to bare URLs, which stay clickable — but the labels are lost. With the
+fixed CLI, set it to `false` and keep them.
+
+The fork also carries the security hardening from `asdigitos/slackcli#1`
+(credential-bearing requests gated to slack.com hosts, terminal output
+sanitized, update downloads checksum-verified).
+
 ## Code / data separation — never write into the skill
 
 The skill is a git repo that gets installed by many people and PR'd back.
