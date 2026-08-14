@@ -77,14 +77,14 @@ skill-root/                      # git, READ-ONLY at runtime, PR-able
   scripts/                       # cron-tick, reply tool, summarizer wrappers, entrypoints
   templates/
     profiles/*.md                # seed profiles (copied out on first use)
-    messages/*.md                # seed Slack message templates (copied out on first use)
+    messages/<locale>/*.md       # seed Slack message templates, per language (en, zh)
     default-summarizer.md        # default feed prompt
     canvas.tmpl
 
 $CANOPY_DATA_HOME  (default ~/.canopy/)   # per-user, NOT in the repo
-  config.json                    # cron interval, slack token ref, data path
+  config.json                    # cron interval, slack token ref, data path, locale
   profiles/<agent>.md            # the user's real, editable global agents
-  messages/*.md                  # the user's real, editable message templates
+  messages/<locale>/*.md         # the user's real, editable message templates
   projects/<projId>/             # one per `track`
     tree.json
     messages/*.md                # optional per-project overrides
@@ -157,7 +157,9 @@ user-editable and PR-able.
 | Moment | Template | Posted where |
 |---|---|---|
 | `track` | `feed-root.md` | channel — root checkpoint message |
+| …then | `track-announce.md` | the **raw thread** — tells the people already arguing there that it is now watched, and where the feed lives |
 | `fork` | `feed-fork.md` | channel — child checkpoint message |
+| …then | `fork-announce.md` | the **parent thread** — points everyone at the new thread so the sub-problem does not silently vanish |
 | summarizer appends a checkpoint | `feed-entry.md` | one entry inside the live segment |
 | active segment fills | `feed-segment.md` | header of the new segment |
 | …and the old one is sealed | `feed-sealed-footer.md` | pointer stamped onto the sealed segment |
@@ -180,16 +182,41 @@ time**, and the post is abandoned: better a failed tick in your log than
 declared variable that is legitimately empty (`reason`, or `entries` on a fresh
 feed) renders as nothing.
 
-Resolution is layered, first hit wins:
+### Wording style
+
+These messages land in a channel people are already busy in, so they read like a
+colleague, not a status system. **Lead with a verb, cut the nominalizations**:
+"Pin this message" over "Pinning is recommended"; "Split off `1.a`" over
+"A sub-problem has been created". Keep each message to a couple of lines — the
+checkpoint entries carry the content, the frame around them should disappear.
+
+### Locale
+
+Templates ship per language under `messages/<locale>/`, currently `en` and `zh`.
+`config.json` sets `"locale"` (default `en`), overridable per project at `track`
+time with `--locale`, because one person often tracks an English infra thread and
+a Chinese product thread from the same machine.
+
+Only the *frame* is localized. Checkpoint summaries come from the summarizer, so
+they follow whatever language the thread is speaking — which is exactly why the
+frame has to be switchable, otherwise every feed reads half-and-half.
+
+### Resolution
+
+Layered, first hit wins:
 
 ```
-projects/<projId>/messages/<name>    # this project only  (rare, e.g. a formal exec-facing tree)
-$CANOPY_DATA_HOME/messages/<name>    # the user's edits    (the normal place to customize)
-skill-root/templates/messages/<name> # shipped default     (read-only)
+projects/<projId>/messages/<name>             # this project only (rare, e.g. a formal exec-facing tree)
+$CANOPY_DATA_HOME/messages/<locale>/<name>    # the user's edits   (the normal place to customize)
+skill-root/templates/messages/<locale>/<name> # shipped default    (read-only)
 ```
 
-Same rule as profiles: seeds are **copied out on first `track`**, so a skill
-update refreshes the shipped defaults without clobbering your wording.
+A project-level override wins regardless of locale — if you hand-wrote that
+message for that tree, you meant it.
+
+Same rule as profiles: seeds are **copied out on first `track`** (only the
+locales you actually use), so a skill update refreshes the shipped defaults
+without clobbering your wording.
 
 ## Commands
 
@@ -219,9 +246,16 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
 
 ### Local CLI — `/canopy <cmd>` (A君 → the agent)
 
-- `track <slackThreadLink>` — **main entrypoint.** Create the root node +
-  `tree.json`, post the root checkpoint message (linking raw thread + Canvas),
-  register the cron job, build the Canvas.
+- `track <slackThreadLink> [--locale <l>]` — **main entrypoint.** Create the root
+  node + `tree.json`, post the root checkpoint message (linking raw thread +
+  Canvas), **announce into the raw thread itself** so the people already
+  discussing there learn it is watched and where to follow, register the cron
+  job, build the Canvas.
+
+  The announce is not optional politeness: without it, a feed exists that the
+  actual participants never hear about, and A君 ends up pasting the link by hand
+  to everyone. It also doubles as the in-thread hint for `fork` / `guide:`, which
+  is how anyone but A君 discovers those commands exist.
 - `agents` — enter profile-edit mode: create / edit / delete global
   `profiles/*.md`.
 - `messages` — review and edit the message templates above. No arg → list every
@@ -265,8 +299,9 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
 
 - `fork <title>` — open a sub-problem. The **current thread_ts becomes parent**;
   add the edge to `tree.json`, post a new root checkpoint message in the same
-  channel (linking the parent message + Canvas). The edge is written at fork
-  time — never inferred later.
+  channel (linking the parent message + Canvas), and reply in the parent thread
+  pointing at the new thread. The edge is written at fork time — never inferred
+  later.
 - `return` — draft a summary to a **new message** for A君 to review before it
   goes up.
 - `ack return` — confirm; post the summary back into the **parent thread** as
