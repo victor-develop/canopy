@@ -8,7 +8,8 @@ only asked for the things that need judgement — replies and summaries.
 
 import re
 
-COMMANDS = ("ack return", "fork", "return", "guide", "recalibrate", "done")
+COMMANDS = ("ack return", "fork", "return", "guide", "recalibrate",
+            "untrack", "track")
 
 
 def mention_re(agent):

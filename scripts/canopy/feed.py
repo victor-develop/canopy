@@ -62,13 +62,14 @@ class Feed(object):
 
     def render_entry(self, summary, author="", date="", icon="•",
                      raw_permalink=None):
-        return self._render("feed-entry.md", {
-            "icon": icon,
-            "summary": summary,
-            "author": author,
-            "date": date,
-            "raw_permalink": raw_permalink or self.state.get("raw_permalink"),
-        })
+        """One checkpoint, one line.
+
+        Author, date and a per-entry permalink used to be here and were cut: a
+        feed is read top to bottom for what happened, and three pieces of
+        provenance per line buried the one piece of content. The header links
+        the thread, so the source is one click away for anyone who wants it.
+        """
+        return self._render("feed-entry.md", {"summary": summary})
 
     # -- lifecycle --------------------------------------------------------
 
@@ -120,6 +121,7 @@ class Feed(object):
                 "segment_index": index,
                 "prev_segment_index": active["index"],
                 "prev_segment_permalink": prev_permalink,
+                "raw_permalink": self.state.get("raw_permalink"),
                 "tree_permalink": self.state.get("tree_permalink"),
             },
             "entries": [entry],

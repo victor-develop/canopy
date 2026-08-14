@@ -1,10 +1,6 @@
 ---
 moment: tree_map_more
-vars: [title, proj_id, segment_index, body, counts, parent_alias, parent_permalink]
+vars: [title, proj_id, segment_index, body, counts, parent_alias, parent_permalink, root_permalink]
 ---
-*🗺 {{title}}* — 第 {{segment_index}} 段  ·  `{{proj_id}}`
-接 <{{parent_permalink}}|上一段>，从 `{{parent_alias}}` 往下
-
+<{{root_permalink}}|{{title}}> trace tree(第 {{segment_index}} 段,接[<{{parent_permalink}}|上一段>])
 {{body}}
-
-_{{counts}}_

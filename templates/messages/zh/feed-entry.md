@@ -1,5 +1,5 @@
 ---
 moment: checkpoint
-vars: [icon, summary, author, date, raw_permalink]
+vars: [summary]
 ---
-{{icon}} {{summary}} — {{author}}，{{date}}  ·  <{{raw_permalink}}|看原文>
+• {{summary}}

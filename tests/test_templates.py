@@ -101,3 +101,33 @@ a <{{url}}|看整棵树> b
 """
     assert templates.render(body, {}) == "a 看整棵树 b"
     assert templates.render(body, {"url": "#x"}) == "a <#x|看整棵树> b"
+
+
+def test_refresh_updates_untouched_copies_and_keeps_edits(dh, repo):
+    """A skill update must reach the user's copies, without eating their edits."""
+    paths.seed(dh, "zh", root=repo)
+    user_dir = paths.messages_dir(dh, "zh")
+    (user_dir / "reply.md").write_text("stale shipped copy", encoding="utf-8")
+    (user_dir / "feed-entry.md").write_text("---\nmoment: x\nvars: []\n---\nmine\n",
+                                            encoding="utf-8")
+
+    # Both differ from shipped, so without --force they are reported, not eaten.
+    updated, kept = paths.refresh(dh, "zh", root=repo)
+    assert {p.name for p in kept} == {"feed-entry.md", "reply.md"}
+    assert updated == []
+
+    updated, kept = paths.refresh(dh, "zh", root=repo, force=True)
+    assert {p.name for p in updated} == {"feed-entry.md", "reply.md"}
+
+
+def test_refresh_reports_instead_of_overwriting_when_asked(dh, repo):
+    paths.seed(dh, "zh", root=repo)
+    user_dir = paths.messages_dir(dh, "zh")
+    (user_dir / "reply.md").write_text("my wording", encoding="utf-8")
+
+    updated, kept = paths.refresh(dh, "zh", root=repo, force=False)
+    assert [p.name for p in kept] == ["reply.md"] and updated == []
+    assert (user_dir / "reply.md").read_text(encoding="utf-8") == "my wording"
+
+    updated, kept = paths.refresh(dh, "zh", root=repo, force=True)
+    assert [p.name for p in updated] == ["reply.md"] and kept == []

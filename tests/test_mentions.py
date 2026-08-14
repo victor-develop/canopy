@@ -40,6 +40,12 @@ def test_command_for_another_agent_is_not_mine():
     assert mentions.parse("@arch fork X", "canopy") == (None, None)
 
 
-def test_done_with_a_reason():
-    assert mentions.parse("@canopy done 索引已上线", "canopy") == \
-        ("done", "索引已上线")
+def test_untrack_with_a_reason():
+    """No `done`: a done state needs a reopen, and then a rule for what done
+    means while a child still runs. Watching is the only thing you toggle."""
+    assert mentions.parse("@canopy untrack 索引已上线", "canopy") == \
+        ("untrack", "索引已上线")
+
+
+def test_track_reopens_a_parked_node():
+    assert mentions.parse("@canopy track", "canopy") == ("track", None)

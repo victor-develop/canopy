@@ -7,12 +7,11 @@ carries its rollup counts — a truncated branch is visibly truncated.
 
 from . import noderef
 
-STATUS_MARK = {"active": "active", "paused": "paused", "done": "done",
-               "untracked": "untracked"}
+STATUS_MARK = {"active": "active", "untracked": "untracked"}
 
 
 def rollup(tree, nid, locked):
-    counts = {"active": 0, "paused": 0, "done": 0, "untracked": 0, "locked": 0}
+    counts = {"active": 0, "untracked": 0, "locked": 0}
     for child in tree.descendants(nid):
         status = tree.node(child).get("status", "active")
         counts[status] = counts.get(status, 0) + 1
@@ -23,11 +22,9 @@ def rollup(tree, nid, locked):
 
 def _rollup_text(counts):
     parts = []
-    for key in ("active", "paused", "done"):
+    for key in ("active", "untracked"):
         if counts.get(key):
             parts.append("%d %s" % (counts[key], key))
-    if counts.get("untracked"):
-        parts.append("%d untracked" % counts["untracked"])
     text = " / ".join(parts)
     if counts.get("locked"):
         text = (text + "  " if text else "") + "lock:%d" % counts["locked"]

@@ -31,7 +31,10 @@ def test_track_creates_tree_state_feed_and_announce(ctx, slack, tracked):
     assert ctx.tree(proj_id).data["tree_msgs"][0]["ts"] == tree_msg["ts"]
     assert feed_post["thread_ts"] is None
     assert announce["thread_ts"] == state["thread_ts"]
-    assert "@canopy" in announce["text"]          # how anyone but A君 finds fork/guide
+    # One line, two links: the trace tree and the digest. Anything longer gets
+    # skimmed past in a thread people are already arguing in.
+    assert announce["text"].startswith("[canopy]:")
+    assert "|跟踪>" in announce["text"] and "|智能总结>" in announce["text"]
 
 
 def test_track_seeds_profiles_and_messages(ctx, tracked):
@@ -80,21 +83,21 @@ def test_fork_of_a_fork_nests(ctx, tracked):
 def test_tree_message_marks_status_and_links(ctx, slack, tracked):
     proj_id = tracked["proj_id"]
     child = ops.fork(ctx, proj_id, tracked["node_id"], "慢查询定位")
-    ops.set_status(ctx, proj_id, child["node_id"], "done", reason="上线了")
+    ops.set_status(ctx, proj_id, child["node_id"], "untracked", reason="先放着")
 
     tree = ctx.tree(proj_id)
     map_ts = tree.data["tree_msgs"][0]["ts"]
     text = slack.text_of(map_ts)
-    assert "✔ `1.a` 慢查询定位" in text
-    assert "<https://example.slack.com/archives/" in text
+    assert "× `1.a` 慢查询定位" in text
+    assert "|智能总结>" in text and "|全文>" in text
 
 
 def test_status_change_posts_into_the_feed_thread(ctx, slack, tracked):
     proj_id, nid = tracked["proj_id"], tracked["node_id"]
-    ops.set_status(ctx, proj_id, nid, "paused", reason="等 DBA")
+    ops.set_status(ctx, proj_id, nid, "untracked", reason="等 DBA")
     last = slack.posted[-1]
     assert last["thread_ts"] == tracked["feed_ts"]
-    assert "paused" in last["text"] and "等 DBA" in last["text"]
+    assert "不再跟踪" in last["text"] and "等 DBA" in last["text"]
 
 
 def test_guide_appends_and_only_reacts(ctx, slack, tracked):

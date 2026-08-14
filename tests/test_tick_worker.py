@@ -19,8 +19,8 @@ def test_idle_node_never_reaches_a_worker(ctx, tracked):
     assert [r["verdict"] for r in results] == ["no-new"]
 
 
-def test_paused_node_is_skipped_entirely(ctx, slack, tracked):
-    ops.set_status(ctx, tracked["proj_id"], tracked["node_id"], "paused")
+def test_untracked_node_is_skipped_entirely(ctx, slack, tracked):
+    ops.set_status(ctx, tracked["proj_id"], tracked["node_id"], "untracked")
     state = state_of(ctx, tracked)
     add_msg(slack, state, "1700001000.000100", "U2", "还有人在吗")
     assert tick_mod.tick(ctx, handle=no_llm) == []
@@ -112,11 +112,22 @@ def test_guide_typed_in_the_thread_only_reacts(ctx, slack, tracked):
     assert slack.reactions[-1]["ts"] == "1700001000.000100"
 
 
-def test_done_typed_in_the_thread_updates_status(ctx, slack, tracked):
+def test_untrack_typed_in_the_thread_stops_the_watching(ctx, slack, tracked):
     state = state_of(ctx, tracked)
-    add_msg(slack, state, "1700001000.000100", "U2", "@canopy done 上线了")
+    add_msg(slack, state, "1700001000.000100", "U2", "@canopy untrack 聊完了")
     tick_mod.tick(ctx, run=no_llm)
-    assert ctx.tree(tracked["proj_id"]).node(tracked["node_id"])["status"] == "done"
+    assert ctx.tree(tracked["proj_id"]).node(tracked["node_id"])["status"] == \
+        "untracked"
+
+
+def test_track_typed_in_the_thread_reopens_it(ctx, slack, tracked):
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    ops.set_status(ctx, proj_id, nid, "untracked")
+    # An untracked node is skipped by the gate, so the command is executed the
+    # way a human would: through the CLI. (In Slack you re-open with
+    # `canopy track <ref>`; the thread itself is no longer watched.)
+    result = ops.set_status(ctx, proj_id, nid, "active")
+    assert result["status"] == "active"
 
 
 def test_cursor_advances_so_the_next_tick_is_free(ctx, slack, tracked):

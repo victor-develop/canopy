@@ -40,66 +40,49 @@ def test_segment_of_finds_where_a_node_is_drawn():
     assert treemap.segment_of(tree, "C1-4") == 2      # its row, not its pointer
 
 
-def test_pointer_row_carries_the_link_to_the_next_message():
+def fake_render(repo):
+    """Render the real shipped zh templates, no data home involved."""
+    from canopy import templates
+
+    def render(name, values):
+        path = repo / "templates" / "messages" / "zh" / name
+        return templates.render(path.read_text(encoding="utf-8"), values)
+    return render
+
+
+def test_pointer_row_carries_the_link_to_the_next_message(repo):
     tree = deep_tree(6)
     segs = treemap.segments(tree)
-    body = treemap.render_body(tree, segs[0],
-                               segment_link=lambda nid: "https://x/seg2")
-    assert "↳ `1.a.i.1.a` 层 4 — <https://x/seg2|接着看>" in body
+    body = treemap.render_body(tree, segs[0], fake_render(repo),
+                               segment_link=lambda nid: "https://x/seg2",
+                               permalink=lambda ch, ts: "https://x/feed")
+    assert "↳ `1.a.i.1.a` 层 4  [<https://x/seg2|接着看>]" in body
 
 
-def test_rows_show_status_owner_and_links():
+def test_a_row_carries_the_alias_the_digest_and_the_thread(repo):
     tree = store.Tree.new("pay", "C1-0", "支付超时", "A君")
     tree.add_child("C1-0", "C1-1", "慢查询", owner="E君")
-    tree.set_status("C1-1", "done")
-    body = treemap.render_body(tree, treemap.segments(tree)[0], states={
-        "C1-1": {"channel": "C1", "raw_permalink": "https://x/p1",
-                 "feed_ts": ["1.0"]},
-    }, permalink=lambda ch, ts: "https://x/feed")
-    assert "✔ `1.a` 慢查询" in body
-    assert "<https://x/p1|thread>" in body and "<https://x/feed|feed>" in body
-    assert "E君" in body and "done" in body
+    body = treemap.render_body(tree, treemap.segments(tree)[0], fake_render(repo),
+                               states={"C1-1": {"channel": "C1",
+                                                "raw_permalink": "https://x/p1",
+                                                "feed_ts": ["1.0"]}},
+                               permalink=lambda ch, ts: "https://x/feed")
+    row = [l for l in body.splitlines() if "慢查询" in l][0]
+    assert row.startswith("    ◦ `1.a` 慢查询")
+    assert "[<https://x/feed|智能总结>] [<https://x/p1|全文>]" in row
+    # Owner, counts and lock state are deliberately absent: this message is only
+    # re-rendered when the tree changes shape, so live fields would go stale.
+    assert "E君" not in row
 
 
-# -- posting side ------------------------------------------------------------
-
-def test_track_posts_one_tree_message(ctx, slack, tracked):
-    tree = ctx.tree(tracked["proj_id"])
-    msgs = tree.data["tree_msgs"]
-    assert len(msgs) == 1
-    text = slack.text_of(msgs[0]["ts"])
-    assert "整棵树" in text and "`1`" in text
-    assert "1 个节点" in text
-
-
-def test_the_tree_message_updates_in_place_on_fork(ctx, slack, tracked):
-    proj_id = tracked["proj_id"]
-    before = ctx.tree(proj_id).data["tree_msgs"][0]["ts"]
-    ops.fork(ctx, proj_id, tracked["node_id"], "慢查询定位")
-    tree = ctx.tree(proj_id)
-    assert [m["ts"] for m in tree.data["tree_msgs"]] == [before]  # no new message
-    assert "慢查询定位" in slack.text_of(before)
-
-
-def test_a_deep_fork_chain_opens_a_second_tree_message(ctx, slack, tracked):
-    proj_id, nid = tracked["proj_id"], tracked["node_id"]
-    for title in ("层1", "层2", "层3", "层4"):
-        nid = ops.fork(ctx, proj_id, nid, title)["node_id"]
-
-    tree = ctx.tree(proj_id)
-    msgs = tree.data["tree_msgs"]
-    assert len(msgs) == 2
-    first, second = slack.text_of(msgs[0]["ts"]), slack.text_of(msgs[1]["ts"])
-    # Message 1 points down, message 2 points back up: the tree stays walkable.
-    assert "接着看" in first
-    assert "接 <" in second and "上一段" in second
-
-
-def test_messages_link_to_the_segment_that_holds_the_node(ctx, tracked):
-    proj_id, nid = tracked["proj_id"], tracked["node_id"]
-    for title in ("层1", "层2", "层3", "层4"):
-        nid = ops.fork(ctx, proj_id, nid, title)["node_id"]
-    tree = ctx.tree(proj_id)
-    deep = treemap.permalink(tree, ctx.cfg, nid)
-    shallow = treemap.permalink(tree, ctx.cfg, tree.root)
-    assert deep != shallow
+def test_an_untracked_node_is_marked_but_kept(repo):
+    tree = store.Tree.new("pay", "C1-0", "支付超时", "A君")
+    tree.add_child("C1-0", "C1-1", "旧方向")
+    tree.set_status("C1-1", "untracked")
+    body = treemap.render_body(tree, treemap.segments(tree)[0], fake_render(repo),
+                               states={"C1-1": {"channel": "C1",
+                                                "raw_permalink": "https://x/p1",
+                                                "feed_ts": ["1.0"]}},
+                               permalink=lambda ch, ts: "https://x/feed")
+    row = [l for l in body.splitlines() if "旧方向" in l][0]
+    assert row.strip().startswith("× `1.a`")

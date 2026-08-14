@@ -1,8 +1,6 @@
 ---
 moment: segment_open
-vars: [title, alias, segment_index, prev_segment_index, prev_segment_permalink, tree_permalink, entries]
+vars: [title, alias, segment_index, prev_segment_index, prev_segment_permalink, raw_permalink, tree_permalink, entries]
 ---
-*🌳 {{title}}*  ·  `{{alias}}`  ·  第 {{segment_index}} 段
-接 <{{prev_segment_permalink}}|第 {{prev_segment_index}} 段>  ·  <{{tree_permalink}}|看整棵树>
-
+<{{raw_permalink}}|{{title}}> update feed(第 {{segment_index}} 段,接[<{{prev_segment_permalink}}|上一段>]):
 {{entries}}

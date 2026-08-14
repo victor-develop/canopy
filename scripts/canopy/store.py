@@ -12,7 +12,10 @@ from pathlib import Path
 
 from . import paths
 
-STATUSES = ("active", "paused", "done", "untracked")
+# Two states, on purpose. A `done` status would need a `reopen` to undo it,
+# and then a rule for what "done" means when a child is still running. Watching
+# is the only thing Canopy actually does, so it is the only thing you toggle.
+STATUSES = ("active", "untracked")
 
 
 def read_json(path, default=None):

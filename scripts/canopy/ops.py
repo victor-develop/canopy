@@ -114,13 +114,18 @@ def sync_treemap(ctx, tree):
     alias_map = noderef.aliases(tree)
     title = tree.node(tree.root).get("title")
     for seg in segments:
+        root_state = states.get(tree.root) or {}
         values = {
             "title": title,
             "proj_id": tree.proj_id,
+            "root_permalink": root_state.get("raw_permalink", ""),
             "segment_index": seg["index"],
-            "body": treemap_mod.render_body(tree, seg, states=states,
-                                            permalink=ctx.permalink,
-                                            segment_link=segment_link),
+            "body": treemap_mod.render_body(
+                tree, seg,
+                lambda name, values: ctx.render(name, values, tree=tree,
+                                                proj_id=tree.proj_id),
+                states=states, permalink=ctx.permalink,
+                segment_link=segment_link),
             "counts": treemap_mod.counts_text(tree),
         }
         name = "tree-map.md"
@@ -146,6 +151,11 @@ def sync_treemap(ctx, tree):
 
     tree.save()
     return segments
+
+
+def _refresh_map(ctx, proj_id):
+    """Re-render the map after something a row displays has changed."""
+    sync_treemap(ctx, ctx.tree(proj_id))
 
 
 # -- track --------------------------------------------------------------------
@@ -191,8 +201,6 @@ def track(ctx, link, title=None, owner=None, locale=None, proj_id=None,
     feed_ts = feed.open("root", {
         "title": title,
         "alias": _alias(tree, nid),
-        "owner": owner,
-        "status": "active",
         "raw_permalink": state["raw_permalink"],
         "tree_permalink": tree_link,
     })
@@ -251,8 +259,6 @@ def fork(ctx, proj_id, parent_nid, title, agent=None):
     feed_ts = feed.open("fork", {
         "title": title,
         "alias": alias,
-        "owner": child_state.get("owner") or "",
-        "status": "active",
         "breadcrumb": breadcrumb,
         "raw_permalink": child_state["raw_permalink"],
         "parent_permalink": parent_permalink,
@@ -301,7 +307,9 @@ def append_checkpoint(ctx, proj_id, nid, summary, author="", raw_permalink=None,
     feed = ctx.feed(proj_id, state, tree)
     result = feed.append(summary, author=author, date=_date(ctx), icon=icon,
                          raw_permalink=raw_permalink)
+    state["last_checkpoint_at"] = ctx.now()
     store.save_state(ctx.dh, proj_id, state)
+    _refresh_map(ctx, proj_id)
     return result
 
 
@@ -353,7 +361,11 @@ def ack_return(ctx, proj_id, nid, agent=None, summary=None):
     ts = ctx.slack.post(parent_state["channel"], text,
                         thread_ts=parent_state["thread_ts"])
     state.pop("return_draft", None)
+    # The tree map links this: a node that reported back is visibly different
+    # from one that just went quiet.
+    state["return_ts"] = ts
     store.save_state(ctx.dh, proj_id, state)
+    _refresh_map(ctx, proj_id)
     return {"ts": ts, "parent": parent, "summary": summary}
 
 
@@ -367,13 +379,15 @@ def set_status(ctx, proj_id, nid, status, reason="", agent=None):
     sync_treemap(ctx, tree)
 
     agent = agent or ctx.agent(state)
-    text = ctx.render("status-change.md", {
+    # One template per state rather than one with a `{{status}}` hole: the
+    # sentence differs, and "→ untracked" inside a Chinese message reads like a
+    # log line, not like a colleague.
+    name = "status-untracked.md" if status == "untracked" else "status-tracked.md"
+    text = ctx.render(name, {
         "agent": agent,
         "title": state.get("title"),
         "alias": _alias(tree, nid),
-        "status": status,
         "reason": reason,
-        "tree_permalink": treemap_mod.permalink(tree, ctx.cfg, nid),
     }, tree=tree, proj_id=proj_id)
     ts = None
     if state.get("feed_ts"):

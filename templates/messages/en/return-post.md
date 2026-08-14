@@ -1,9 +1,6 @@
 ---
 moment: ack_return
-vars: [agent, title, alias, summary, feed_permalink]
+vars: [agent, alias, title, summary, feed_permalink]
 ---
-*[{{agent}}]* Closed `{{alias}}` — *{{title}}*
-
+[{{agent}}]: `{{alias}}` [<{{feed_permalink}}|{{title}}>] closed
 {{summary}}
-
-<{{feed_permalink}}|See how it got here>

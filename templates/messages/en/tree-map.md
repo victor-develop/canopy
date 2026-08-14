@@ -1,9 +1,6 @@
 ---
 moment: tree_map
-vars: [title, proj_id, segment_index, body, counts]
+vars: [title, proj_id, segment_index, body, counts, root_permalink]
 ---
-*🗺 {{title}}* — the whole tree  ·  `{{proj_id}}`
-
+<{{root_permalink}}|{{title}}> trace tree  ·  `{{proj_id}}`
 {{body}}
-
-_{{counts}}_

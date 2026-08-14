@@ -40,6 +40,14 @@ def _locked_nodes(ctx, proj_id, tree):
 
 def cmd_track(args):
     ctx = _ctx(args)
+    if "/archives/" not in args.link:
+        # `track <node ref>` re-opens a node someone parked. Same verb as
+        # adopting a fresh thread, because it is the same intent: watch this.
+        proj_id, nid = _resolve(ctx, args.link)
+        result = ops.set_status(ctx, proj_id, nid, "active",
+                                reason=getattr(args, "reason", "") or "")
+        print("%s -> %s" % (nid, result["status"]))
+        return 0
     result = ops.track(ctx, args.link, title=args.title, owner=args.owner,
                        locale=args.locale, proj_id=args.project)
     if not args.no_cron:
@@ -105,6 +113,21 @@ def cmd_messages(args):
     ctx = _ctx(args)
     locale = args.locale or ctx.cfg.get("locale", "zh")
     paths.seed(ctx.dh, locale, root=ctx.root)
+
+    if args.refresh:
+        # Seeds are copied out once and then never touched again, so a skill
+        # update leaves the user reading their stale copy and wondering why the
+        # new wording never showed up. This re-copies the ones they never
+        # edited; anything they did edit is reported, not overwritten.
+        updated, kept = paths.refresh(ctx.dh, locale, root=ctx.root,
+                                      force=args.force)
+        for path in updated:
+            print("updated  %s" % path)
+        for path in kept:
+            print("kept     %s  (edited — use --force to overwrite)" % path)
+        if not updated and not kept:
+            print("already up to date")
+        return 0
 
     if args.name and args.preview:
         values = _preview_values(ctx, args)
@@ -204,15 +227,8 @@ def cmd_status(args):
     return cmd_tree(args)
 
 
-def cmd_pause(args):
-    return _status_cmd(args, "paused")
-
-
-def cmd_resume(args):
-    return _status_cmd(args, "active")
-
-
 def cmd_untrack(args):
+    """Stop watching. Not final: `track <ref>` puts it back."""
     return _status_cmd(args, "untracked")
 
 
@@ -338,8 +354,9 @@ def build_parser():
     parser.add_argument("--data-dir", help="override $CANOPY_DATA_HOME")
     sub = parser.add_subparsers(dest="cmd")
 
-    p = sub.add_parser("track", help="adopt a Slack thread")
-    p.add_argument("link")
+    p = sub.add_parser("track", help="adopt a Slack thread, or re-open a node")
+    p.add_argument("link", metavar="link|node")
+    p.add_argument("--reason", default="")
     p.add_argument("--title")
     p.add_argument("--owner")
     p.add_argument("--locale")
@@ -355,6 +372,10 @@ def build_parser():
     p = sub.add_parser("messages", help="review message templates")
     p.add_argument("name", nargs="?")
     p.add_argument("--preview", action="store_true")
+    p.add_argument("--refresh", action="store_true",
+                   help="re-copy shipped templates you have not edited")
+    p.add_argument("--force", action="store_true",
+                   help="with --refresh: overwrite edited ones too")
     p.add_argument("--node")
     p.add_argument("--project")
     p.add_argument("--locale")
@@ -366,12 +387,10 @@ def build_parser():
         p.add_argument("--depth")
         p.set_defaults(func=cmd_tree)
 
-    for name, func in (("pause", cmd_pause), ("resume", cmd_resume),
-                       ("untrack", cmd_untrack)):
-        p = sub.add_parser(name)
-        p.add_argument("ref")
-        p.add_argument("--reason", default="")
-        p.set_defaults(func=func)
+    p = sub.add_parser("untrack", help="stop watching a node (reversible)")
+    p.add_argument("ref")
+    p.add_argument("--reason", default="")
+    p.set_defaults(func=cmd_untrack)
 
     p = sub.add_parser("rename", help="retitle a node (tree, state, feed headers)")
     p.add_argument("ref")

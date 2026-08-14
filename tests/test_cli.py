@@ -94,15 +94,16 @@ def test_tree_depth_zero_collapses(cli_env, capsys):
     assert "慢查询定位" not in capsys.readouterr().out
 
 
-def test_pause_resume_and_untrack(cli_env, capsys):
+def test_untrack_then_track_again(cli_env, capsys):
+    """`untrack` is a toggle, not a tombstone — `track <ref>` puts it back."""
     track_one(cli_env)
-    run(["pause", "pay"])
-    ctx = cli._ctx(None)
-    assert ctx.tree("pay").node(ctx.tree("pay").root)["status"] == "paused"
-    run(["resume", "pay"])
-    assert cli._ctx(None).tree("pay").node(ctx.tree("pay").root)["status"] == "active"
-    run(["untrack", "pay", "--reason", "收了"])
-    assert cli._ctx(None).tree("pay").node(ctx.tree("pay").root)["status"] == "untracked"
+    root = cli._ctx(None).tree("pay").root
+
+    run(["untrack", "pay", "--reason", "先放着"])
+    assert cli._ctx(None).tree("pay").node(root)["status"] == "untracked"
+
+    run(["track", "pay"])
+    assert cli._ctx(None).tree("pay").node(root)["status"] == "active"
 
 
 def test_ambiguous_ref_refuses_and_lists_candidates(cli_env, capsys):
@@ -110,7 +111,7 @@ def test_ambiguous_ref_refuses_and_lists_candidates(cli_env, capsys):
     track_one(cli_env, project="edd", channel="C0EDD", ts="1699000002.000100",
               title="EDD 不准")
     capsys.readouterr()
-    code = run(["pause", "1"])
+    code = run(["untrack", "1"])
     assert code == 1
     err = capsys.readouterr().err
     assert "pay:1" in err and "edd:1" in err
@@ -198,7 +199,7 @@ def test_map_prints_the_tree_message_link(cli_env, capsys):
 def test_unknown_ref_exits_nonzero(cli_env, capsys):
     track_one(cli_env)
     capsys.readouterr()
-    assert run(["pause", "没有这个节点"]) == 1
+    assert run(["untrack", "没有这个节点"]) == 1
 
 
 def test_agents_on_a_fresh_install_seeds_and_lists(cli_env, capsys):
