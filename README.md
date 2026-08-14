@@ -1,7 +1,8 @@
 # canopy
 
 把发散的 Slack 讨论整理成一棵能导航的**子问题树**,每个节点带一条自己的
-**checkpoint feed**。一个 Claude skill,靠 `cron` + `claude -p` 离线跑,没有常驻进程。
+**checkpoint feed**。一个 skill,靠 `cron` 加一个无头 CLI 离线跑(默认 `codex exec`,
+`claude -p` 也支持),没有常驻进程。
 
 ## 要解决什么
 
@@ -14,9 +15,8 @@ Slack 里的活是按树长的。A君在一个 thread 里聊问题 1,聊到一�
 3. **兜底的人没法导航** —— A君要把每个子节点、子子节点都推到收口,手上却没有一个
    能横着看全树的界面。
 
-Canopy 把这棵树维护在旁边:盯每个活跃节点的新消息,消息里 `@` 了 agent 就派
-`claude -p` worker 处理,给每个节点维护一条 checkpoint feed,再把整棵树渲染成可点的
-Canvas。
+Canopy 把这棵树维护在旁边:盯每个活跃节点的新消息,消息里 `@` 了 agent 就派一个无头
+CLI worker 去处理,给每个节点维护一条 checkpoint feed,再把整棵树渲染成可点的 Canvas。
 
 ## 怎么跑的
 
@@ -26,8 +26,21 @@ Canvas。
 没有就起**轻量 summarizer**,只更新 feed。worker 从磁盘冷启动,干完活推进 `cursor`、
 释放节点锁、退出。中途崩了也不丢:下一 tick 从 `cursor` 重新拉。
 
-完整设计看 [`SKILL.md`](./SKILL.md):三个 loop、两层 cron、代码与数据分离、命令集、
-状态 schema。
+跑 worker 的是哪个 CLI,由 `config.json` 的 `runner` 决定,默认 `codex`:
+
+```jsonc
+{ "runner": "codex" }                                // codex exec,默认
+{ "runner": "claude" }                               // claude -p
+{ "runner": { "cmd": ["my-wrapper", "--flag"] } }    // 自己包一层
+```
+
+两个都是 prompt 走 stdin、结果走 stdout、跑完退出,所以换 runner 只改一行配置。cron
+的 `PATH` 很干净,`codex` 这类装在 mise / nvm 底下的二进制它看不见,所以 `track` 会先
+把 runner 解析成绝对路径存进 `config.json`,解析不到就拒绝注册 cron —— 免得树看着在被
+盯,其实一次都没 tick 过。
+
+完整设计看 [`SKILL.md`](./SKILL.md):三个 loop、两层 cron、runner、代码与数据分离、
+命令集、状态 schema。
 
 ## 命令
 
