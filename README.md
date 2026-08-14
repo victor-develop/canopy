@@ -41,6 +41,126 @@ Local CLI (`/canopy …`): `track`, `agents`, `tree`/`status`, `pause`/`resume`,
 In-thread (`@<agent> …`): `fork`, `return`, `ack return`, `guide:`,
 `recalibrate`, `done`.
 
+## The journey — one problem, tracked end to end
+
+A `#pay` thread about payment timeouts, from "this thread is getting long" to
+"the whole tree is closed". Everything on the left runs in A君's terminal;
+everything on the right is a message someone posts in Slack.
+
+### 0 · once per machine
+
+```
+$ /canopy agents                     write profiles/arch.md, profiles/qa.md
+$ /canopy messages                   list templates + which layer each came from
+                                       feed-root.md        user   (edited)
+                                       track-announce.md   shipped
+                                       ...
+$ /canopy messages feed-root --preview
+                                     renders the exact Slack text. Posts nothing.
+```
+
+### 1 · `track` — adopt a live thread
+
+```
+$ /canopy track https://…/archives/C0PAY/p1699000001 --locale zh
+
+  #pay ────────────────────────────────────────────────────────────────
+   🧵 1699.0001  “支付超时”            ← the raw argument, left untouched
+      └ [arch] 我开始盯这条 thread 了…            track-announce.md
+   📌 1699.0002  🌳 支付超时 · `1`                feed-root.md
+   🗂  Canvas “pay-timeout”                       canvas.tmpl
+  ──────────────────────────────────────────────────────────────────────
+   + cron job registered      + ~/.canopy/projects/pay-timeout/tree.json
+```
+
+The announce is the point: the people already arguing in that thread learn it
+is watched, where the feed lives, and that `fork` / `guide:` exist.
+
+### 2 · every N minutes — the tick nobody sees
+
+```
+cron ──► for each active node
+           │
+           ├ latest_ts <= cursor ? ──yes──► skip                    0 tokens
+           ├ lock file present ?   ──yes──► skip, retry next tick
+           │
+           └ new messages mention @agent ?
+                ├ no  ──► light summarizer ──► maybe append feed-entry.md
+                │                              into the live feed segment
+                └ yes ──► full worker      ──► reply.md in the thread
+                                               advance cursor, drop lock
+```
+
+### 3 · `guide:` — steer what gets recorded
+
+```
+🧵 1  @arch guide: 只记 DB 侧结论，排期讨论跳过
+      → appended to the node's guide.md, effective next tick
+      → ✅ reaction only — no message, the thread stays readable
+```
+
+### 4 · `fork` — a side-problem gets its own owner
+
+```
+🧵 1  @arch fork 慢查询定位
+
+  #pay ────────────────────────────────────────────────────────────────
+   🧵 1699.0001  “支付超时”
+      └ [arch] 拆出 `1.a` — 慢查询定位 …           fork-announce.md
+   🧵 1701.0500  “慢查询定位”         ← new thread, E/F pulled in here
+   📌 1701.0501  🌳 慢查询定位 · `1.a`             feed-fork.md
+  ──────────────────────────────────────────────────────────────────────
+   tree.json: 1 ──► 1.a          the edge is written now, never inferred later
+```
+
+Fork again inside `1.a` and you get `1.a.i` — the nesting Slack can't hold.
+
+### 5 · `tree` — navigate at whatever zoom you need
+
+```
+$ /canopy tree                       # no arg → every root, depth 0
+  pay-timeout  支付超时     active   4 active / 1 paused / 2 done   🔒1
+
+$ /canopy tree pay-timeout           # named a root → depth all
+  1        支付超时         active   @arch
+  ├ 1.a    慢查询定位       active   @arch
+  │ └ 1.a.i  索引方案       active   @qa     🔒 worker running
+  └ 1.b    重试风暴         paused
+
+$ /canopy tree 1.a --depth 1         # start anywhere, cap the depth
+  ↑ pay-timeout / 1                  # breadcrumb, so you keep your place
+  1.a      慢查询定位       active   @arch
+  └ 1.a.i  索引方案         active   @qa     ▸ 2 done
+
+$ /canopy pause 1.b                  # stop watching, keep the feed
+$ /canopy resume 1.b
+$ /canopy canvas                     # re-render, print the link
+```
+
+### 6 · `return` / `ack return` / `done` — feed the answer back up
+
+```
+🧵 1.a  @arch return           draft posted as a NEW message — A君 only
+        @arch ack return   ──► posted into 🧵 1               return-post.md
+        @arch done         ──► status-change.md in 1.a's feed, ✔ in the Canvas
+```
+
+Nothing goes up to the parent thread until A君 has read it.
+
+### 7 · when the feed drifts — `recalibrate`
+
+```
+$ /canopy recalibrate 1        (or in-thread: @arch recalibrate)
+   reads the WHOLE history in chunks → rebuilds every feed segment
+   heavy escape hatch; the per-tick segment update is the cheap common path
+```
+
+### 8 · `untrack` — close the tree
+
+```
+$ /canopy untrack 1            archive, unregister cron, grey it in the Canvas
+```
+
 ## Status
 
 Design frozen; `SKILL.md` is the source of truth. `scripts/` and `templates/`
