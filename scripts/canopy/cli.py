@@ -6,7 +6,8 @@ import sys
 from pathlib import Path
 
 from . import config as config_mod
-from . import cron, noderef, ops, paths, runner as runner_mod, schedule
+from . import cron, events, noderef, ops, opsview, paths
+from . import runner as runner_mod, schedule
 from . import store, templates, tick as tick_mod, treemap as treemap_mod
 from . import treeview, worker
 from .errors import CanopyError, NodeRefError
@@ -63,10 +64,36 @@ def cmd_track(args):
                 "%s\nNo cron job was registered — a tree that looks watched but "
                 "never ticks is worse than a failed track." % (exc,))
         schedule.sync(ctx.dh, ctx.cfg)
+    page = opsview.write(ctx.dh, ctx.cfg, root=ctx.root)
+    _open(page)
     print("tracked %s as `%s`" % (result["title"], result["proj_id"]))
     print("  feed     %s" % ctx.permalink(result["node_id"].split("-")[0],
                                           result["feed_ts"]))
     print("  树消息   %s" % result["tree_permalink"])
+    print("  运维页   %s" % page)
+    return 0
+
+
+def _open(path):
+    """Open the ops page in whatever the desktop uses. Never fatal."""
+    import subprocess
+    for argv in (["open", str(path)], ["xdg-open", str(path)]):
+        try:
+            subprocess.run(argv, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, check=True)
+            return True
+        except (OSError, subprocess.CalledProcessError):
+            continue
+    return False
+
+
+def cmd_ops(args):
+    """Re-render the ops page. Every tick rewrites it too."""
+    ctx = _ctx(args)
+    page = opsview.write(ctx.dh, ctx.cfg, root=ctx.root)
+    print(page)
+    if not args.no_open:
+        _open(page)
     return 0
 
 
@@ -308,6 +335,7 @@ def cmd_tick(args):
         # An `@canopy untrack` typed in Slack can retire the last active node;
         # the entry that just woke us should go with it.
         schedule.sync(ctx.dh, ctx.cfg)
+        opsview.write(ctx.dh, ctx.cfg, root=ctx.root)
     except Exception as exc:
         _log_tick(ctx.dh, "ERROR %s: %s" % (type(exc).__name__, exc))
         raise
@@ -425,6 +453,10 @@ def build_parser():
     p = sub.add_parser("tick", help="one cron tick")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_tick)
+
+    p = sub.add_parser("ops", help="re-render and open the local ops page")
+    p.add_argument("--no-open", action="store_true")
+    p.set_defaults(func=cmd_ops)
 
     p = sub.add_parser("config", help="show or set config values")
     p.add_argument("--set", action="append")

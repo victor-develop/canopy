@@ -5,7 +5,9 @@ active node and out. That is what makes an idle tree nearly free, so the gate
 runs before anything else and short-circuits hard.
 """
 
-from . import locks, mentions, store, worker
+import time
+
+from . import events, locks, mentions, store, worker
 from .errors import CanopyError, LockedError
 
 
@@ -31,6 +33,20 @@ def gate(ctx, proj_id, nid, state, now=None, alive=None, agents=()):
         # Only Canopy's own replies arrived. Advance past them, spend nothing.
         return "self-only", {"cursor": messages[-1]["ts"]}
     return "work", {"messages": theirs, "cursor": messages[-1]["ts"]}
+
+
+def _outcome_word(outcome):
+    """One word for the ops page: what did this worker actually do."""
+    outcome = outcome or {}
+    if outcome.get("error"):
+        return "error"
+    if outcome.get("posted"):
+        return "posted"
+    if outcome.get("appended"):
+        return "checkpoint"
+    if outcome.get("command"):
+        return outcome["command"]
+    return "skip"
 
 
 def tick(ctx, now=None, alive=None, handle=None, out_file=None, run=None):
@@ -75,8 +91,20 @@ def tick(ctx, now=None, alive=None, handle=None, out_file=None, run=None):
             stale = int(ctx.cfg.get("lock_stale_seconds", 1800))
             try:
                 with locks.held(node_dir, now=now, stale_after=stale, alive=alive):
+                    started = time.time()
                     outcome = handle(ctx, proj_id, nid, messages, agents=agents,
                                      out_file=out_file, run=run)
+                    events.append(ctx.dh, {
+                        "kind": "worker",
+                        "ts": time.time(),
+                        "duration": round(time.time() - started, 2),
+                        "project": proj_id,
+                        "node": nid,
+                        "mode": (outcome or {}).get("kind")
+                                or (outcome or {}).get("command") or "?",
+                        "outcome": _outcome_word(outcome),
+                        "error": (outcome or {}).get("error"),
+                    })
                     # Re-read: a worker (or a fork) may have rewritten state.
                     state = store.load_state(ctx.dh, proj_id, nid)
                     state["cursor"] = payload["cursor"]
@@ -89,4 +117,9 @@ def tick(ctx, now=None, alive=None, handle=None, out_file=None, run=None):
             results.append({"project": proj_id, "node": nid, "verdict": "work",
                             "messages": len(messages), "outcome": outcome,
                             "cursor": state["cursor"]})
+
+    verdicts = {}
+    for row in results:
+        verdicts[row["verdict"]] = verdicts.get(row["verdict"], 0) + 1
+    events.append(ctx.dh, {"kind": "tick", "ts": time.time(), "verdicts": verdicts})
     return results

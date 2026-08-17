@@ -82,6 +82,28 @@ def no_real_runner(monkeypatch):
     monkeypatch.setattr("canopy.runner._run", refuse)
 
 
+@pytest.fixture(autouse=True)
+def fake_crontab(monkeypatch):
+    """Never touch the developer's real crontab.
+
+    `tick` and `ops` keep the cron entry in step with the tree, so any test that
+    runs them would otherwise install a job pointing at a pytest tmp dir — which
+    is exactly what happened once, and it survived the test run.
+    """
+    state = {"text": ""}
+
+    def run(argv, stdin=""):
+        if argv[:2] == ["crontab", "-l"]:
+            return (0, state["text"], "") if state["text"] else (1, "", "")
+        if argv[:2] == ["crontab", "-"]:
+            state["text"] = stdin
+            return 0, "", ""
+        raise AssertionError("unexpected command in a test: %r" % (argv,))
+
+    monkeypatch.setattr("canopy.cron._run", run)
+    return state
+
+
 @pytest.fixture
 def repo():
     return REPO

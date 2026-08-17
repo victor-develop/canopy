@@ -241,3 +241,28 @@ def test_tick_logs_the_failure_too(cli_env, monkeypatch, capsys):
         run(["tick"])
     log = (cli_env["dh"] / "tick.log").read_text(encoding="utf-8")
     assert "ERROR RuntimeError: slackcli missing" in log
+
+
+def test_ops_page_is_written_and_reflects_the_tree(cli_env, capsys, monkeypatch):
+    from canopy import opsview
+    opened = []
+    monkeypatch.setattr(cli, "_open", lambda p: opened.append(p) or True)
+    track_one(cli_env)
+    capsys.readouterr()
+    opened.clear()               # track opens it; this checks `ops` alone
+
+    run(["ops", "--no-open"])
+    page = (cli_env["dh"] / "ops.html").read_text(encoding="utf-8")
+    assert "支付超时" in page and "{{SNAPSHOT}}" not in page
+    assert opened == []          # --no-open means no-open
+
+
+def test_track_opens_the_ops_page(cli_env, capsys, monkeypatch):
+    opened = []
+    monkeypatch.setattr(cli, "_open", lambda p: opened.append(str(p)) or True)
+    monkeypatch.setattr(cli.runner_mod, "resolve_path", lambda r: "/abs/x")
+    monkeypatch.setattr(cli.schedule, "sync", lambda dh, cfg, **kw: None)
+    cli_env["slack"].add("C0PAY", "1699000001.000100", "1699000001.000100", "U1", "支付超时")
+    run(["track", "https://example.slack.com/archives/C0PAY/p1699000001000100",
+         "--title", "支付超时", "--project", "pay"])
+    assert opened and opened[0].endswith("ops.html")

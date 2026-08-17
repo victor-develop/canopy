@@ -219,3 +219,10 @@ def test_one_parked_tree_does_not_stop_the_others(dh):
     make_tree(dh, "edd", status="active")
     run, _ = recorder([(0, "*/5 * * * * tick # canopy\n")])
     assert schedule.sync(dh, {}, run=run) == schedule.UNCHANGED
+
+
+def test_the_suite_cannot_touch_the_real_crontab(fake_crontab):
+    """Guard for the guard: `canopy.cron._run` is stubbed for every test."""
+    from canopy import cron
+    cron.install("/bin/tick", 5, data_home="/tmp/x")
+    assert "# canopy" in fake_crontab["text"]

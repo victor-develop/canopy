@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Re-read from disk periodically: the tick rewrites this file in place. -->
+<meta http-equiv="refresh" content="30">
+<title>canopy 运维</title>
+<style>
+  :root{
+    --ink:#12181f; --ink-2:#31404f; --ink-3:#5d6f80;
+    --line:#dfe5ea; --line-2:#eef2f5; --paper:#fff; --paper-2:#f7f9fa; --paper-3:#eef2f5;
+    --ok:#0f5c4a; --ok-soft:#e6f0ec; --warn:#8a5a00; --warn-soft:#fdf4e3;
+    --bad:#8f2c22; --bad-soft:#fbeceb;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.65}
+  .wrap{max-width:1040px;margin:0 auto;padding:0 28px}
+  header{border-bottom:1px solid var(--line)}
+  .masthead{display:flex;align-items:baseline;gap:14px;padding:18px 0}
+  .mark{font-family:var(--mono);font-weight:600;font-size:15px}
+  .mark span{color:var(--ok)}
+  .masthead .meta{margin-left:auto;color:var(--ink-3);font-size:12.5px;font-family:var(--mono)}
+  h2{font-size:12px;font-family:var(--mono);letter-spacing:.13em;text-transform:uppercase;
+     color:var(--ink-3);margin:0 0 16px;font-weight:600}
+  section{padding:34px 0;border-bottom:1px solid var(--line-2)}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);border:1px solid var(--line)}
+  .cell{background:var(--paper);padding:16px 18px}
+  .cell b{display:block;font-size:24px;font-weight:640;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
+  .cell span{color:var(--ink-3);font-size:12.5px}
+  .pill{display:inline-block;font-family:var(--mono);font-size:11.5px;padding:2px 8px;border-radius:10px;
+        background:var(--paper-3);color:var(--ink-2)}
+  .pill.ok{background:var(--ok-soft);color:var(--ok)}
+  .pill.warn{background:var(--warn-soft);color:var(--warn)}
+  .pill.bad{background:var(--bad-soft);color:var(--bad)}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line-2);vertical-align:top}
+  th{font-size:11.5px;font-family:var(--mono);letter-spacing:.08em;text-transform:uppercase;
+     color:var(--ink-3);border-bottom:1px solid var(--line);font-weight:600}
+  td.mono,.mono{font-family:var(--mono);font-size:13px;color:var(--ink-2);font-variant-numeric:tabular-nums}
+  .empty{color:var(--ink-3);font-size:14px;padding:12px 0}
+  .err{font-family:var(--mono);font-size:12.5px;background:var(--bad-soft);border:1px solid #f0d5d2;
+       padding:10px 12px;margin-bottom:8px;white-space:pre-wrap;color:#6d241c}
+  .bars{display:flex;gap:3px;align-items:flex-end;height:38px;margin-top:6px}
+  .bar{flex:1;background:var(--paper-3);min-height:2px}
+  .bar.work{background:var(--ok)} .bar.err{background:var(--bad)}
+  footer{padding:26px 0 50px;color:var(--ink-3);font-size:13px;font-family:var(--mono)}
+  @media(max-width:820px){.grid{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<header><div class="wrap masthead">
+  <div class="mark">canopy<span>/</span>ops</div>
+  <div class="meta" id="stamp"></div>
+</div></header>
+
+<div class="wrap">
+
+<section>
+  <h2>心跳</h2>
+  <div class="grid">
+    <div class="cell"><b id="since">—</b><span>距上次 tick</span></div>
+    <div class="cell"><b id="interval">—</b><span>cron 间隔</span></div>
+    <div class="cell"><b id="running-n">—</b><span>此刻在跑的 worker</span></div>
+    <div class="cell"><b id="watched">—</b><span>在盯的节点</span></div>
+  </div>
+  <p id="verdict" style="margin:14px 0 0"></p>
+</section>
+
+<section>
+  <h2>此刻在跑什么</h2>
+  <div id="running"></div>
+</section>
+
+<section>
+  <h2>最近叫醒过模型的节点</h2>
+  <div id="workers"></div>
+</section>
+
+<section>
+  <h2>树</h2>
+  <div id="trees"></div>
+</section>
+
+<section style="border-bottom:0">
+  <h2>最近的失败</h2>
+  <div id="errors"></div>
+</section>
+
+<footer>
+  <span id="paths"></span>
+</footer>
+</div>
+
+<script>
+const D = {{SNAPSHOT}};
+
+// The page is a snapshot on disk; the clock is the browser's. That is the whole
+// trick: even when nothing rewrites this file, "距上次 tick" keeps climbing and
+// eventually turns red — which is exactly what a cron that fires and crashes
+// looks like from the outside.
+const nowMs = () => Date.now();
+const el = id => document.getElementById(id);
+
+function ago(ts){
+  if(!ts) return "—";
+  const s = Math.max(0, (nowMs() - ts*1000)/1000);
+  if(s < 60) return Math.floor(s) + " 秒";
+  if(s < 3600) return Math.floor(s/60) + " 分";
+  if(s < 86400) return (s/3600).toFixed(1) + " 小时";
+  return (s/86400).toFixed(1) + " 天";
+}
+function secs(v){ return v == null ? "—" : (v < 60 ? v.toFixed(1)+"s" : (v/60).toFixed(1)+"m"); }
+function esc(s){ return String(s == null ? "" : s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+function pill(text, kind){ return `<span class="pill ${kind||""}">${esc(text)}</span>`; }
+
+function heartbeat(){
+  const last = D.last_tick && D.last_tick.ts;
+  el("since").textContent = ago(last);
+  el("interval").textContent = D.cron.interval_minutes + " 分";
+  el("running-n").textContent = D.running.filter(r => r.held).length;
+  let watched = 0;
+  D.trees.forEach(t => t.nodes.forEach(n => { if(n.status === "active") watched++; }));
+  el("watched").textContent = watched;
+
+  const overdue = last && (nowMs()/1000 - last) > D.cron.overdue_after;
+  let msg;
+  if(!D.cron.should_run){
+    msg = pill("没有在盯的节点", "") + " cron 条目按设计不该存在," +
+          (D.cron.installed ? pill("但它还在","warn") : pill("确实也不在","ok"));
+  } else if(!D.cron.installed){
+    msg = pill("cron 条目不见了", "bad") + " 有节点是 active,但没有东西会来叫醒它们。跑一次 <code>canopy track &lt;节点&gt;</code> 装回来。";
+  } else if(!last){
+    msg = pill("还没有 tick 记录", "warn") + " cron 装了,但一次都没跑过 —— 或者跑了但在写日志之前就崩了。";
+  } else if(overdue){
+    msg = pill("超时未跑", "bad") + ` 已经 ${ago(last)},超过两个间隔。多半是 tick 崩了:看下面的失败,或 <code>tail ~/.canopy/tick.log</code>。`;
+  } else {
+    msg = pill("正常", "ok") + ` 上次 ${ago(last)},结果 ${esc(JSON.stringify(D.last_tick.verdicts || {}))}`;
+  }
+  el("verdict").innerHTML = msg;
+}
+
+function running(){
+  const rows = D.running.filter(r => r.held);
+  if(!rows.length){ el("running").innerHTML = `<div class="empty">没有 worker 在跑。canopy 只在有新消息时才起进程。</div>`; return; }
+  el("running").innerHTML = `<table><tr><th>节点</th><th>pid</th><th>已跑</th><th>runner</th></tr>` +
+    rows.map(r => `<tr><td><b>${esc(r.alias)}</b> ${esc(r.title)}<br><span class="mono">${esc(r.project)}</span></td>
+      <td class="mono">${esc(r.pid)}</td><td class="mono">${ago(r.started)}</td>
+      <td class="mono">${esc(r.runner)}</td></tr>`).join("") + `</table>`;
+}
+
+function workers(){
+  if(!D.recent_workers.length){ el("workers").innerHTML = `<div class="empty">还没有 worker 跑过。</div>`; return; }
+  el("workers").innerHTML = `<table><tr><th>什么时候</th><th>节点</th><th>类型</th><th>耗时</th><th>结果</th></tr>` +
+    D.recent_workers.map(w => `<tr><td class="mono">${ago(w.ts)}前</td>
+      <td>${esc(w.alias || w.node)}</td><td>${pill(w.mode || "?", w.mode === "command" ? "" : "ok")}</td>
+      <td class="mono">${secs(w.duration)}</td>
+      <td class="mono">${w.error ? pill("失败","bad") : esc(w.outcome || "")}</td></tr>`).join("") + `</table>`;
+}
+
+function trees(){
+  if(!D.trees.length){ el("trees").innerHTML = `<div class="empty">还没有 track 过任何 thread。</div>`; return; }
+  el("trees").innerHTML = D.trees.map(t => `<h3 class="mono" style="font-size:13px;margin:18px 0 6px">${esc(t.project)}</h3>
+    <table><tr><th>别名</th><th>标题</th><th>状态</th><th>checkpoint</th></tr>` +
+    t.nodes.map(n => `<tr><td class="mono">${esc(n.alias)}</td>
+      <td>${n.raw_permalink ? `<a href="${esc(n.raw_permalink)}">${esc(n.title)}</a>` : esc(n.title)}</td>
+      <td>${pill(n.status, n.status === "active" ? "ok" : "")}</td>
+      <td class="mono">${n.checkpoints || 0}</td></tr>`).join("") + `</table>`).join("");
+}
+
+function errors(){
+  if(!D.recent_errors.length){ el("errors").innerHTML = `<div class="empty">最近没有失败。</div>`; return; }
+  el("errors").innerHTML = D.recent_errors.map(e =>
+    `<div class="err">${ago(e.ts)}前 · ${esc(e.node || e.kind)}\n${esc(e.error)}</div>`).join("");
+}
+
+function paint(){
+  heartbeat(); running(); workers(); trees(); errors();
+  el("stamp").textContent = "快照写于 " + new Date(D.now*1000).toLocaleString();
+  el("paths").textContent = `${D.data_home} · runner ${D.runner_path || D.runner} · slackcli ${D.slack_cli || "—"}`;
+}
+paint();
+setInterval(paint, 1000);   // the elapsed counters, not the data
+</script>
+</body>
+</html>
