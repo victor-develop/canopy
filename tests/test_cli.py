@@ -188,7 +188,7 @@ def test_tick_prints_a_row_per_active_node(cli_env, capsys):
     capsys.readouterr()
     run(["tick", "--json"])
     rows = json.loads(capsys.readouterr().out)
-    assert rows[0]["verdict"] == "no-new"
+    assert rows[0]["verdict"] in ("no-new", "self-only")
 
 
 def test_config_set_and_show(cli_env, capsys):
@@ -228,7 +228,7 @@ def test_tick_writes_a_log_line(cli_env, capsys):
     track_one(cli_env)
     run(["tick"])
     log = (cli_env["dh"] / "tick.log").read_text(encoding="utf-8")
-    assert "no-new=1" in log
+    assert "no-new=1" in log or "self-only=1" in log
 
 
 def test_tick_logs_the_failure_too(cli_env, monkeypatch, capsys):

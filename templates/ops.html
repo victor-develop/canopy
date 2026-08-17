@@ -134,6 +134,9 @@ function heartbeat(){
     msg = pill("cron 条目不见了", "bad") + " 有节点是 active,但没有东西会来叫醒它们。跑一次 <code>canopy track &lt;节点&gt;</code> 装回来。";
   } else if(!last){
     msg = pill("还没有 tick 记录", "warn") + " cron 装了,但一次都没跑过 —— 或者跑了但在写日志之前就崩了。";
+  } else if((D.last_tick.verdicts || {})["tick-already-running"]){
+    msg = pill("上一轮还在跑", "warn") +
+          ` 最近一次 tick(${ago(last)}前)让位给了仍在进行的那一轮 —— recalibrate 之类可以跑很久,这是正常的。`;
   } else if(overdue){
     msg = pill("超时未跑", "bad") + ` 已经 ${ago(last)},超过两个间隔。多半是 tick 崩了:看下面的失败,或 <code>tail ~/.canopy/tick.log</code>。`;
   } else {

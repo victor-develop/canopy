@@ -63,6 +63,9 @@ class Ctx(object):
         return config_mod.permalink(self.cfg, channel, ts)
 
 
+_HELD = set()
+
+
 class tree_lock(object):
     """One writer per project.
 
@@ -84,17 +87,21 @@ class tree_lock(object):
 
     def __enter__(self):
         self.dir.mkdir(parents=True, exist_ok=True)
-        info = locks.read(self.dir) or {}
-        if info.get("pid") == os.getpid():
-            # Reentrant within one process: `fork` holds the lock and then calls
-            # `sync_treemap`, which takes it too. Without this the two deadlock
-            # for 30 seconds and then fail.
+        if str(self.dir) in _HELD:
+            # Reentrant within this process: `fork` holds the lock and then
+            # calls `sync_treemap`, which takes it too.
+            #
+            # Tracked in memory, not inferred from the pid in the lock file: pids
+            # get recycled, so a SIGKILLed tick's leftover lock would eventually
+            # match a later tick's pid, which read as "I already hold this" and
+            # turned the mutex into a no-op that also never released.
             self.reentered = True
             return self
         deadline = time.time() + 30
         while True:
             try:
                 self.held = locks.acquire(self.dir, stale_after=self.stale)
+                _HELD.add(str(self.dir))
                 return self
             except locks.LockedError:
                 if time.time() > deadline:
@@ -103,6 +110,7 @@ class tree_lock(object):
 
     def __exit__(self, *exc):
         if not self.reentered:
+            _HELD.discard(str(self.dir))
             locks.release(self.dir)
         return False
 
@@ -262,9 +270,16 @@ def track(ctx, link, title=None, owner=None, locale=None, proj_id=None,
         "feed_permalink": ctx.permalink(channel, feed_ts),
         "tree_permalink": tree_link,
     }, tree=tree, proj_id=proj_id)
-    announce_ts = ctx.slack.post(channel, announce, thread_ts=thread_ts)
+    # What was already in the thread before we said anything. Setting the cursor
+    # to our own announce skipped whatever people posted during the handful of
+    # Slack round-trips above; the announce itself is filtered by its identity
+    # prefix, so it does not need to be jumped over.
+    seen = ctx.slack.thread(channel, thread_ts, limit=200)
+    latest_before = seen[-1]["ts"] if seen else thread_ts
 
-    state["cursor"] = announce_ts
+    announce_ts = post_into_thread(ctx, channel, announce, thread_ts, agent)
+
+    state["cursor"] = latest_before
     store.save_state(ctx.dh, proj_id, state)
     _sync_treemap(ctx, tree)
 
@@ -341,7 +356,7 @@ def _fork(ctx, proj_id, parent_nid, title, agent=None):
         "feed_permalink": ctx.permalink(channel, feed_ts),
         "tree_permalink": tree_link,
     }, tree=tree, proj_id=proj_id)
-    ctx.slack.post(channel, announce, thread_ts=parent_state["thread_ts"])
+    post_into_thread(ctx, channel, announce, parent_state["thread_ts"], agent)
 
     store.save_state(ctx.dh, proj_id, child_state)
     sync_treemap(ctx, tree)
@@ -425,8 +440,8 @@ def ack_return(ctx, proj_id, nid, agent=None, summary=None):
         "summary": summary,
         "feed_permalink": feed_permalink,
     }, tree=tree, proj_id=proj_id)
-    ts = ctx.slack.post(parent_state["channel"], text,
-                        thread_ts=parent_state["thread_ts"])
+    ts = post_into_thread(ctx, parent_state["channel"], text,
+                          parent_state["thread_ts"], agent)
     # Nothing is recorded about the fact that a return happened. `return` is a
     # convenience for drafting the summary, not a step in a lifecycle: a human
     # who types the conclusion into the parent thread themselves has closed the
@@ -512,8 +527,8 @@ def reply(ctx, proj_id, nid, body, agent=None):
     agent = agent or ctx.agent(state)
     text = ctx.render("reply.md", {"agent": agent, "body": body},
                       tree=tree, proj_id=proj_id)
-    _must_be_recognisable(text, agent)
-    return ctx.slack.post(state["channel"], text, thread_ts=state["thread_ts"])
+    return post_into_thread(ctx, state["channel"], text, state["thread_ts"],
+                            agent)
 
 
 def post_notice(ctx, proj_id, nid, template, agent=None, **values):
@@ -525,6 +540,19 @@ def post_notice(ctx, proj_id, nid, template, agent=None, **values):
                       proj_id=proj_id)
     _must_be_recognisable(text, agent)
     return ctx.slack.post(state["channel"], text, thread_ts=state["thread_ts"])
+
+
+def post_into_thread(ctx, channel, text, thread_ts, agent):
+    """Every message Canopy puts inside a watched thread goes through here.
+
+    The check used to sit on `reply` and `post_notice` only, so
+    `fork-announce.md` and `return-post.md` — both of which land in a *parent*
+    node's thread, before that node's cursor — could be edited into something
+    Canopy no longer recognises as its own, and the parent would then wake on
+    its own announcement every tick.
+    """
+    _must_be_recognisable(text, agent)
+    return ctx.slack.post(channel, text, thread_ts=thread_ts)
 
 
 def _must_be_recognisable(text, agent):

@@ -79,9 +79,17 @@ def _execute(ctx, proj_id, nid, messages, plan, out_file=None, run=None):
         _mark_done(ctx, proj_id, nid, detail)
         results.append(outcome)
     if plan["question"]:
-        results.append(run_full(ctx, proj_id, nid, messages,
-                                plan["question"]["agent"], out_file=out_file,
-                                run=run))
+        # Same guard as the commands. A reply is not idempotent either: one
+        # poison command plus one question in the same batch posted the same
+        # answer three times and paid for three full workers.
+        reply_key = {"message": plan["question"]["message"], "command": "reply"}
+        if _already_done(ctx, proj_id, nid, reply_key):
+            results.append({"kind": "full", "skipped": "already answered"})
+        else:
+            results.append(run_full(ctx, proj_id, nid, messages,
+                                    plan["question"]["agent"],
+                                    out_file=out_file, run=run))
+            _mark_done(ctx, proj_id, nid, reply_key)
     if not results:
         return run_light(ctx, proj_id, nid, messages, out_file=out_file, run=run)
     if len(results) == 1:

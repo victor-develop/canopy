@@ -42,10 +42,15 @@ def test_track_seeds_profiles_and_messages(ctx, tracked):
     assert (paths.messages_dir(ctx.dh, "zh") / "feed-root.md").exists()
 
 
-def test_track_cursor_skips_its_own_announce(ctx, slack, tracked):
-    """Otherwise the very next tick would wake a worker on Canopy's own message."""
+def test_track_keeps_messages_posted_while_it_was_announcing(ctx, slack, tracked):
+    """The cursor lands on what was in the thread before Canopy spoke, not on
+    Canopy's own announce — anything said during those round-trips used to be
+    skipped for good. The announce is filtered by its identity prefix instead."""
+    from canopy import mentions
     state = store.load_state(ctx.dh, tracked["proj_id"], tracked["node_id"])
-    assert state["cursor"] == tracked["announce_ts"]
+    assert state["cursor"] != tracked["announce_ts"]
+    announce = [p for p in slack.posted if p["ts"] == tracked["announce_ts"]][0]
+    assert mentions.is_own_post(announce["text"], ["canopy"])
 
 
 def test_track_refuses_to_track_the_same_project_twice(ctx, slack, tracked):

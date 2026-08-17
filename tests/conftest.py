@@ -43,13 +43,34 @@ class FakeSlack(object):
 
     # -- writes
     def _next_ts(self):
-        self._counter += 7
+        """Monotonic past everything already in the channel, like Slack.
+
+        A counter that could hand out a ts *older* than a message already in the
+        thread made "Canopy reads its own post back" untestable: the reply
+        landed below the cursor and looked like history.
+        """
+        newest = 0
+        for msgs in self.threads.values():
+            for m in msgs:
+                newest = max(newest, int(float(m["ts"])))
+        self._counter = max(self._counter, newest) + 7
         return "%d.000100" % self._counter
 
     def post(self, channel, text, thread_ts=None):
+        """Posting also makes the message readable — like the real Slack.
+
+        The old fake kept `posted` and `threads` as separate worlds, so nothing
+        Canopy said could ever be read back. That hid an entire class of bug:
+        every message Canopy puts in a watched thread is something the next tick
+        will read, and whether it recognises its own writing was untestable.
+        Two real defects lived in that blind spot.
+        """
         ts = self._next_ts()
         self.posted.append({"channel": channel, "text": text,
                             "thread_ts": thread_ts, "ts": ts})
+        root = thread_ts or ts
+        self.threads.setdefault(self._key(channel, root), []).append(
+            {"ts": ts, "user": "UCANOPY", "text": text})
         return ts
 
     def update(self, channel, ts, text):

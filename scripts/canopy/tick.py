@@ -110,6 +110,12 @@ def tick(ctx, now=None, alive=None, handle=None, out_file=None, run=None):
         gate_lock = locks.acquire(ctx.dh, stale_after=int(
             ctx.cfg.get("lock_stale_seconds", 1800)), alive=alive)
     except LockedError:
+        # Still a heartbeat. Without this the ops page saw no tick for however
+        # long the running one takes — `recalibrate` can hold the lock for
+        # hours — and reported "overdue, the tick probably crashed" while
+        # everything was in fact fine.
+        events.append(ctx.dh, {"kind": "tick", "ts": time.time(),
+                               "verdicts": {"tick-already-running": 1}})
         return [{"verdict": "tick-already-running"}]
 
     try:

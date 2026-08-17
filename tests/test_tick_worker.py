@@ -15,8 +15,10 @@ def no_llm(*args, **kwargs):
 
 
 def test_idle_node_never_reaches_a_worker(ctx, tracked):
+    """`self-only` here means the only thing since the cursor is Canopy's own
+    announce — still zero tokens, still no worker."""
     results = tick_mod.tick(ctx, handle=no_llm)
-    assert [r["verdict"] for r in results] == ["no-new"]
+    assert [r["verdict"] for r in results] == ["self-only"]
 
 
 def test_untracked_node_is_skipped_entirely(ctx, slack, tracked):
@@ -290,3 +292,43 @@ def test_the_tick_lock_is_released_afterwards(ctx, tracked):
     from canopy import locks
     tick_mod.tick(ctx, handle=no_llm)
     assert not locks.lock_path(ctx.dh).exists()
+
+
+def test_canopy_does_not_wake_the_parent_with_its_own_fork_announce(ctx, slack,
+                                                                   tracked):
+    """The announce lands in the parent's thread, before the parent's cursor.
+    If Canopy cannot recognise it, the parent wakes on it every tick forever."""
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "@canopy fork 慢查询定位")
+    tick_mod.tick(ctx, run=no_llm)          # the fork, plus its announce
+
+    results = tick_mod.tick(ctx, handle=no_llm)   # would raise if it woke a worker
+
+    parent = [r for r in results if r["node"] == nid][0]
+    assert parent["verdict"] in ("self-only", "no-new")
+
+
+def test_canopy_does_not_answer_its_own_reply(ctx, slack, tracked):
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "@canopy 这个怎么办")
+    tick_mod.tick(ctx, run=lambda *a, **k: "我的答复")
+
+    results = tick_mod.tick(ctx, handle=no_llm)
+    assert results[0]["verdict"] == "self-only"
+
+
+def test_a_question_is_answered_once_even_when_the_batch_retries(ctx, slack,
+                                                                tracked):
+    """One poison command plus one question posted the same answer three times
+    and paid for three full workers."""
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "@canopy ack return")
+    add_msg(slack, state, "1700001001.000100", "U3", "@canopy 你怎么看")
+
+    for _ in range(4):
+        tick_mod.tick(ctx, run=lambda *a, **k: "我的答复")
+
+    replies = [p for p in slack.posted if "我的答复" in (p["text"] or "")]
+    assert len(replies) == 1

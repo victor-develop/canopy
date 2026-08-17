@@ -232,16 +232,30 @@ def start_background(dh, cfg, root=None, port=None, spawn=None, effects=None):
     import sys
     from pathlib import Path
 
-    chosen = free_port(port or int(cfg.get("serve_port", DEFAULT_PORT)))
+    # Ask for a port, do not claim it: between our bind test and the child's
+    # bind, anything could take it. The child records what it actually got.
+    wanted = port or int(cfg.get("serve_port", DEFAULT_PORT))
     argv = [sys.executable, str(Path(__file__).resolve().parents[1] / "canopy_main.py"),
-            "serve", "--port", str(chosen), "--no-open"]
+            "serve", "--port", str(wanted), "--no-open"]
     if spawn is None and effects is not None:
         spawn = lambda argv, dh: effects.spawn(argv)
     spawn = spawn or _spawn
     pid = spawn(argv, dh)
-    store.write_json(state_path(dh), {"pid": pid, "port": chosen})
-    return {"pid": pid, "port": chosen, "running": True,
-            "url": "http://%s:%s/" % (HOST, chosen)}
+    store.write_json(state_path(dh), {"pid": pid, "port": wanted})
+
+    # Wait briefly for the child to publish the port it really bound.
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        recorded = store.read_json(state_path(dh), default={}) or {}
+        if recorded.get("pid") != pid and _responds(recorded.get("port")):
+            break
+        if _responds(recorded.get("port")):
+            break
+        time.sleep(0.05)
+    final = store.read_json(state_path(dh), default={}) or {}
+    port_final = final.get("port", wanted)
+    return {"pid": final.get("pid", pid), "port": port_final, "running": True,
+            "url": "http://%s:%s/" % (HOST, port_final)}
 
 
 def _responds(port):
