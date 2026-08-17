@@ -8,6 +8,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts"))
 
 from canopy import config as config_mod  # noqa: E402
+from canopy import effects as effects_mod  # noqa: E402
 from canopy import ops, paths, store  # noqa: E402
 
 
@@ -42,13 +43,34 @@ class FakeSlack(object):
 
     # -- writes
     def _next_ts(self):
-        self._counter += 7
+        """Monotonic past everything already in the channel, like Slack.
+
+        A counter that could hand out a ts *older* than a message already in the
+        thread made "Canopy reads its own post back" untestable: the reply
+        landed below the cursor and looked like history.
+        """
+        newest = 0
+        for msgs in self.threads.values():
+            for m in msgs:
+                newest = max(newest, int(float(m["ts"])))
+        self._counter = max(self._counter, newest) + 7
         return "%d.000100" % self._counter
 
     def post(self, channel, text, thread_ts=None):
+        """Posting also makes the message readable — like the real Slack.
+
+        The old fake kept `posted` and `threads` as separate worlds, so nothing
+        Canopy said could ever be read back. That hid an entire class of bug:
+        every message Canopy puts in a watched thread is something the next tick
+        will read, and whether it recognises its own writing was untestable.
+        Two real defects lived in that blind spot.
+        """
         ts = self._next_ts()
         self.posted.append({"channel": channel, "text": text,
                             "thread_ts": thread_ts, "ts": ts})
+        root = thread_ts or ts
+        self.threads.setdefault(self._key(channel, root), []).append(
+            {"ts": ts, "user": "UCANOPY", "text": text})
         return ts
 
     def update(self, channel, ts, text):
@@ -74,12 +96,36 @@ class FakeSlack(object):
         return None
 
 
+@pytest.fixture
+def fake_crontab():
+    """An in-memory crontab. The real one is off limits: a test once installed
+    a job pointing at a pytest tmp dir and left it there."""
+    state = {"text": ""}
+
+    def run(argv, stdin=""):
+        if argv[:2] == ["crontab", "-l"]:
+            return (0, state["text"], "") if state["text"] else (1, "", "")
+        if argv[:2] == ["crontab", "-"]:
+            state["text"] = stdin
+            return 0, "", ""
+        raise AssertionError("unexpected command in a test: %r" % (argv,))
+
+    state["run"] = run
+    return state
+
+
 @pytest.fixture(autouse=True)
-def no_real_runner(monkeypatch):
-    """No test may spawn a real codex/claude: it would hang or cost money."""
-    def refuse(*args, **kwargs):
-        raise AssertionError("a test tried to spawn the real runner")
-    monkeypatch.setattr("canopy.runner._run", refuse)
+def no_machine_effects(monkeypatch, fake_crontab):
+    """One door for every touch of the machine, and it is shut.
+
+    Replaces what used to be three separate symbol patches (runner, crontab,
+    spawn). Those only guarded the holes somebody had already fallen into; a
+    Recording() refuses anything it was not explicitly taught, so the next
+    effect somebody adds fails in tests instead of on a laptop.
+    """
+    recording = effects_mod.Recording(run=fake_crontab["run"])
+    monkeypatch.setattr(effects_mod, "DEFAULT", recording)
+    return recording
 
 
 @pytest.fixture
@@ -101,11 +147,12 @@ def slack():
 
 
 @pytest.fixture
-def ctx(dh, slack, repo):
+def ctx(dh, slack, repo, no_machine_effects):
     cfg = config_mod.load(dh)
     cfg["slack_workspace_url"] = "https://example.slack.com"
     config_mod.save(dh, cfg)
-    return ops.Ctx(dh, cfg=cfg, slack=slack, root=repo, now=lambda: 1700000000.0)
+    return ops.Ctx(dh, cfg=cfg, slack=slack, root=repo, now=lambda: 1700000000.0,
+                   effects=no_machine_effects)
 
 
 @pytest.fixture

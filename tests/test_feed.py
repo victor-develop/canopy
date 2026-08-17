@@ -87,3 +87,64 @@ def test_recalibrate_rewrites_every_segment(ctx, slack, tracked):
     assert sum(len(s["entries"]) for s in rebuilt) == 4
     assert "旧 checkpoint" not in slack.text_of(rebuilt[0]["ts"])
     assert "重建后的 0" in slack.text_of(rebuilt[0]["ts"])
+
+
+def test_rebuild_never_exceeds_the_message_cap(ctx, slack, tracked):
+    """The old version packed the tail into the last segment and produced a
+    message Slack's chat.update rejects."""
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    ctx.cfg["feed_segment_max_chars"] = 300
+    tree = ctx.tree(proj_id)
+    state = store.load_state(ctx.dh, proj_id, nid)
+    feed = ctx.feed(proj_id, state, tree)
+
+    used = feed.rebuild([feed.render_entry("重建条目 %02d" % i) for i in range(40)])
+
+    assert len(used) > 1
+    for segment in used:
+        assert len(slack.text_of(segment["ts"])) <= 400   # cap + sealed footer
+
+
+def test_rebuild_grows_the_feed_when_it_needs_to(ctx, slack, tracked):
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    ctx.cfg["feed_segment_max_chars"] = 200
+    state = store.load_state(ctx.dh, proj_id, nid)
+    feed = ctx.feed(proj_id, state, ctx.tree(proj_id))
+
+    used = feed.rebuild([feed.render_entry("x" * 40) for _ in range(10)])
+    assert [s["index"] for s in used] == list(range(1, len(used) + 1))
+    assert state["feed_ts"][-1] == used[-1]["ts"]
+
+
+def test_a_shorter_rebuild_retires_the_segments_it_no_longer_needs(ctx, slack, tracked):
+    """Most chunks answering SKIP is normal. Keeping the old segments on disk
+    left Slack and disk disagreeing, and the next append then overwrote a
+    sealed segment."""
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    ctx.cfg["feed_segment_max_chars"] = 200
+    state = store.load_state(ctx.dh, proj_id, nid)
+    feed = ctx.feed(proj_id, state, ctx.tree(proj_id))
+    long_feed = feed.rebuild([feed.render_entry("x" * 40) for _ in range(10)])
+    assert len(long_feed) > 2
+
+    short = feed.rebuild([feed.render_entry("只剩一条结论")])
+
+    assert len(short) == 1
+    assert len(entries_of(ctx, proj_id, nid)) == 1          # disk matches
+    for retired in long_feed[1:]:
+        assert "并回去了" in slack.text_of(retired["ts"])   # and so does Slack
+        assert retired["ts"] not in state["feed_ts"]
+
+
+def test_a_grown_feed_can_be_walked(ctx, slack, tracked):
+    """Every new segment's back-link must resolve; computed during layout they
+    came out as `pNone`."""
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    ctx.cfg["feed_segment_max_chars"] = 200
+    state = store.load_state(ctx.dh, proj_id, nid)
+    feed = ctx.feed(proj_id, state, ctx.tree(proj_id))
+
+    used = feed.rebuild([feed.render_entry("y" * 40) for _ in range(12)])
+
+    for segment in used[1:]:
+        assert "pNone" not in slack.text_of(segment["ts"])

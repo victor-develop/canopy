@@ -127,3 +127,29 @@ def test_track_falls_back_to_the_slug_when_the_namer_fails(ctx, slack):
     link = "https://example.slack.com/archives/%s/p1699000900000100" % channel
     result = ops.track(ctx, link, title="支付超时", namer=boom)
     assert result["proj_id"] == "支付超时"
+
+
+def test_a_stale_answer_file_is_never_read_back(tmp_path):
+    """`claude` and a custom `cmd` take no `-o`, so a file left behind by a
+    codex-era run was being returned as this run's answer, every time."""
+    out = tmp_path / "last-message.txt"
+    out.write_text("OLD ANSWER FROM A PREVIOUS RUN", encoding="utf-8")
+
+    answer = runner.run({"runner": "claude"}, "P", tmp_path, out_file=out,
+                        exec_fn=lambda a, p, c: (0, "the actual new answer", ""))
+    assert answer == "the actual new answer"
+
+
+def test_the_answer_file_is_cleared_before_the_run(tmp_path):
+    out = tmp_path / "last-message.txt"
+    out.write_text("OLD", encoding="utf-8")
+    seen = {}
+
+    def exec_fn(argv, prompt, cwd):
+        seen["existed"] = out.exists()
+        out.write_text("fresh", encoding="utf-8")
+        return 0, "", ""
+
+    assert runner.run({"runner": "codex"}, "P", tmp_path, out_file=out,
+                      exec_fn=exec_fn) == "fresh"
+    assert seen["existed"] is False

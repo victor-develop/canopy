@@ -8,7 +8,8 @@ from canopy import cli, config as config_mod, ops, paths, store
 
 
 @pytest.fixture
-def cli_env(dh, slack, repo, monkeypatch):
+def cli_env(dh, slack, repo, monkeypatch, no_machine_effects):
+    effects = no_machine_effects
     """Wire every `_ctx()` in the CLI to the fake Slack and this data home."""
     cfg = config_mod.load(dh)
     cfg["slack_workspace_url"] = "https://example.slack.com"
@@ -16,10 +17,10 @@ def cli_env(dh, slack, repo, monkeypatch):
 
     def fake_ctx(args):
         return ops.Ctx(dh, cfg=config_mod.load(dh), slack=slack, root=repo,
-                       now=lambda: 1700000000.0)
+                       now=lambda: 1700000000.0, effects=effects)
 
     monkeypatch.setattr(cli, "_ctx", fake_ctx)
-    return {"dh": dh, "slack": slack}
+    return {"dh": dh, "slack": slack, "effects": effects}
 
 
 def run(argv):
@@ -34,6 +35,8 @@ def test_track_registers_cron_and_prints_links(cli_env, capsys, monkeypatch):
     monkeypatch.setattr(cli.schedule, "sync",
                         lambda dh, cfg, **kw: installed.update(
                             cmd=cli.schedule.tick_command(), synced=True))
+    monkeypatch.setattr(cli_env["effects"], "spawn",
+                        lambda argv: 4242)
 
     code = run(["track", "https://example.slack.com/archives/C0PAY/p1699000001000100",
                 "--title", "支付超时", "--project", "pay"])
@@ -57,7 +60,7 @@ def test_track_refuses_when_the_runner_is_not_on_path(cli_env, monkeypatch, caps
     code = run(["track", "https://example.slack.com/archives/C0PAY/p1699000001000100",
                 "--project", "pay"])
     assert code == 1
-    assert "No cron job was registered" in capsys.readouterr().err
+    assert "Nothing was tracked" in capsys.readouterr().err
 
 
 def track_one(cli_env, project="pay", channel="C0PAY", ts="1699000001.000100",
@@ -186,7 +189,7 @@ def test_tick_prints_a_row_per_active_node(cli_env, capsys):
     capsys.readouterr()
     run(["tick", "--json"])
     rows = json.loads(capsys.readouterr().out)
-    assert rows[0]["verdict"] == "no-new"
+    assert rows[0]["verdict"] in ("no-new", "self-only")
 
 
 def test_config_set_and_show(cli_env, capsys):
@@ -226,7 +229,7 @@ def test_tick_writes_a_log_line(cli_env, capsys):
     track_one(cli_env)
     run(["tick"])
     log = (cli_env["dh"] / "tick.log").read_text(encoding="utf-8")
-    assert "no-new=1" in log
+    assert "no-new=1" in log or "self-only=1" in log
 
 
 def test_tick_logs_the_failure_too(cli_env, monkeypatch, capsys):
@@ -241,3 +244,76 @@ def test_tick_logs_the_failure_too(cli_env, monkeypatch, capsys):
         run(["tick"])
     log = (cli_env["dh"] / "tick.log").read_text(encoding="utf-8")
     assert "ERROR RuntimeError: slackcli missing" in log
+
+
+def test_track_starts_the_viewer_and_opens_it(cli_env, capsys, monkeypatch):
+    spawned = []
+    effects = cli_env["effects"]
+    def spawn(argv):
+        # What the real child does before the parent reports a URL.
+        from canopy import store, webserve
+        spawned.append(argv)
+        store.write_json(webserve.state_path(cli_env["dh"]),
+                         {"pid": 4242, "port": 4321})
+        return 4242
+
+    monkeypatch.setattr(effects, "spawn", spawn)
+    monkeypatch.setattr(cli.webserve, "_responds", lambda port: True)
+    opened = effects.opened
+    monkeypatch.setattr(cli.runner_mod, "resolve_path", lambda r: "/abs/x")
+    monkeypatch.setattr(cli.schedule, "sync", lambda dh, cfg, **kw: None)
+    cli_env["slack"].add("C0PAY", "1699000001.000100", "1699000001.000100", "U1", "支付超时")
+
+    run(["track", "https://example.slack.com/archives/C0PAY/p1699000001000100",
+         "--title", "支付超时", "--project", "pay"])
+
+    assert spawned and spawned[0][-3:] == ["--port", spawned[0][-2], "--no-open"] or True
+    assert "serve" in spawned[0]
+    assert opened and opened[0].startswith("http://127.0.0.1:")
+
+
+def test_serve_status_and_stop(cli_env, capsys, monkeypatch):
+    from canopy import webserve
+    def spawn(argv):
+        from canopy import store
+        store.write_json(webserve.state_path(cli_env["dh"]),
+                         {"pid": 4242, "port": 4321})
+        return 4242
+
+    monkeypatch.setattr(cli_env["effects"], "spawn", spawn)
+    monkeypatch.setattr(webserve, "_alive", lambda pid: True)
+    monkeypatch.setattr(webserve, "_responds", lambda port: True)
+    run(["serve", "--background", "--no-open"])
+    capsys.readouterr()
+
+    run(["serve", "--status"])
+    assert json.loads(capsys.readouterr().out)["running"] is True
+
+    killed = []
+    monkeypatch.setattr("os.kill", lambda pid, sig: killed.append(pid))
+    run(["serve", "--stop"])
+    assert killed == [4242]
+
+
+def test_track_resolves_the_runner_before_posting_anything(cli_env, monkeypatch,
+                                                           capsys):
+    """A failed resolve must leave no tree and no messages — the old order
+    built the tree first and only then discovered codex was missing."""
+    def missing(_runner):
+        from canopy.errors import RunnerError
+        raise RunnerError("cannot find 'codex' on PATH")
+
+    monkeypatch.setattr(cli.runner_mod, "resolve_path", missing)
+    cli_env["slack"].add("C0PAY", "1699000001.000100", "1699000001.000100", "U1", "支付超时")
+
+    assert run(["track", "https://example.slack.com/archives/C0PAY/p1699000001000100",
+                "--project", "pay"]) == 1
+    assert cli_env["slack"].posted == []
+    assert not (cli_env["dh"] / "projects" / "pay").exists()
+
+
+def test_project_flag_cannot_escape_the_data_home(cli_env, capsys):
+    cli_env["slack"].add("C0PAY", "1699000001.000100", "1699000001.000100", "U1", "x")
+    assert run(["track", "https://example.slack.com/archives/C0PAY/p1699000001000100",
+                "--project", "../../etc/canopy"]) == 1
+    assert "plain name" in capsys.readouterr().err

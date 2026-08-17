@@ -42,10 +42,15 @@ def test_track_seeds_profiles_and_messages(ctx, tracked):
     assert (paths.messages_dir(ctx.dh, "zh") / "feed-root.md").exists()
 
 
-def test_track_cursor_skips_its_own_announce(ctx, slack, tracked):
-    """Otherwise the very next tick would wake a worker on Canopy's own message."""
+def test_track_keeps_messages_posted_while_it_was_announcing(ctx, slack, tracked):
+    """The cursor lands on what was in the thread before Canopy spoke, not on
+    Canopy's own announce — anything said during those round-trips used to be
+    skipped for good. The announce is filtered by its identity prefix instead."""
+    from canopy import mentions
     state = store.load_state(ctx.dh, tracked["proj_id"], tracked["node_id"])
-    assert state["cursor"] == tracked["announce_ts"]
+    assert state["cursor"] != tracked["announce_ts"]
+    announce = [p for p in slack.posted if p["ts"] == tracked["announce_ts"]][0]
+    assert mentions.is_own_post(announce["text"], ["canopy"])
 
 
 def test_track_refuses_to_track_the_same_project_twice(ctx, slack, tracked):
@@ -221,3 +226,25 @@ def test_the_child_thread_says_what_it_is_about(ctx, slack, tracked):
     learn what it is for."""
     result = ops.fork(ctx, tracked["proj_id"], tracked["node_id"], "慢查询定位")
     assert "慢查询定位" in slack.text_of(result["thread_ts"])
+
+
+def test_a_template_that_hides_the_identity_prefix_is_refused(ctx, tracked):
+    """Canopy skips its own messages by the `[agent]` prefix. Edit that away and
+    it answers itself every tick, burning a worker each time — so fail here, on
+    the machine of whoever just edited the template."""
+    user_template = paths.messages_dir(ctx.dh, "zh") / "reply.md"
+    user_template.write_text("---\nmoment: reply\nvars: [agent, body]\n---\n"
+                             "{{body}} —— {{agent}}\n", encoding="utf-8")
+    with pytest.raises(ValueError) as exc:
+        ops.reply(ctx, tracked["proj_id"], tracked["node_id"], "查到了")
+    assert "reply to itself" in str(exc.value)
+
+
+def test_fork_without_a_title_answers_through_a_template(ctx, slack, tracked):
+    from canopy import worker
+    state = store.load_state(ctx.dh, tracked["proj_id"], tracked["node_id"])
+    slack.add(state["channel"], state["thread_ts"], "1700001000.000100", "U2",
+              "@canopy fork")
+    worker.handle(ctx, tracked["proj_id"], tracked["node_id"],
+                  [{"ts": "1700001000.000100", "user": "U2", "text": "@canopy fork"}])
+    assert "fork" in slack.posted[-1]["text"] and "标题" in slack.posted[-1]["text"]

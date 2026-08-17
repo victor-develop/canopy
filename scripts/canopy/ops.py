@@ -6,22 +6,28 @@ fork typed in the terminal cannot produce differently-shaped state — so the
 command layers stay thin and this module holds the behaviour.
 """
 
+import os
 import time
 from pathlib import Path
 
 from . import config as config_mod
+from . import effects as effects_mod
 from . import feed as feed_mod
-from . import noderef, paths, shortid, slack as slack_mod, store, templates
+from . import locks, noderef, paths, shortid, slack as slack_mod, store, templates
 from . import treemap as treemap_mod
 
 
 class Ctx(object):
-    def __init__(self, dh, cfg=None, slack=None, root=None, now=None):
+    def __init__(self, dh, cfg=None, slack=None, root=None, now=None,
+                 effects=None):
         self.dh = Path(dh)
         self.cfg = cfg if cfg is not None else config_mod.load(self.dh)
+        # Every touch of the machine goes through here; tests inject a
+        # Recording() that refuses to spawn. See effects.py for why.
+        self.effects = effects or effects_mod.DEFAULT
         self.slack = slack if slack is not None else slack_mod.Slack.from_config(
-            self.cfg)
-        self.root = root
+            self.cfg, effects=self.effects)
+        self.root = Path(root) if root else None
         self._now = now
 
     def now(self):
@@ -57,6 +63,58 @@ class Ctx(object):
         return config_mod.permalink(self.cfg, channel, ts)
 
 
+_HELD = set()
+
+
+class tree_lock(object):
+    """One writer per project.
+
+    `tree.json` is read whole, modified and written whole by `fork`,
+    `set_status`, `rename` and `sync_treemap` — and the CLI paths took no lock
+    at all. A cron tick handling `@canopy fork X` while someone typed
+    `canopy untrack 1.b` in a terminal produced a lost update: whichever wrote
+    last won, and the fork's edge vanished while its Slack messages and node
+    state stayed behind, unreachable.
+
+    Atomic writes do not help here; this is lost update, not torn file.
+    """
+
+    def __init__(self, ctx, proj_id):
+        self.dir = paths.project_dir(ctx.dh, proj_id)
+        self.stale = int(ctx.cfg.get("lock_stale_seconds", 1800))
+        self.held = None
+        self.reentered = False
+
+    def __enter__(self):
+        self.dir.mkdir(parents=True, exist_ok=True)
+        if str(self.dir) in _HELD:
+            # Reentrant within this process: `fork` holds the lock and then
+            # calls `sync_treemap`, which takes it too.
+            #
+            # Tracked in memory, not inferred from the pid in the lock file: pids
+            # get recycled, so a SIGKILLed tick's leftover lock would eventually
+            # match a later tick's pid, which read as "I already hold this" and
+            # turned the mutex into a no-op that also never released.
+            self.reentered = True
+            return self
+        deadline = time.time() + 30
+        while True:
+            try:
+                self.held = locks.acquire(self.dir, stale_after=self.stale)
+                _HELD.add(str(self.dir))
+                return self
+            except locks.LockedError:
+                if time.time() > deadline:
+                    raise
+                time.sleep(0.2)
+
+    def __exit__(self, *exc):
+        if not self.reentered:
+            _HELD.discard(str(self.dir))
+            locks.release(self.dir)
+        return False
+
+
 def _date(ctx):
     return time.strftime("%Y-%m-%d", time.localtime(ctx.now()))
 
@@ -83,6 +141,12 @@ def _states(ctx, tree):
 
 
 def sync_treemap(ctx, tree):
+    """Post or update the tree message(s), under the project lock."""
+    with tree_lock(ctx, tree.proj_id):
+        return _sync_treemap(ctx, tree)
+
+
+def _sync_treemap(ctx, tree):
     """Post or update the tree message(s). -> the segments, with their ts.
 
     Two passes on purpose: a segment's rows contain links to *other* segments,
@@ -167,7 +231,8 @@ def track(ctx, link, title=None, owner=None, locale=None, proj_id=None,
         if (paths.project_dir(ctx.dh, proj_id) / "tree.json").exists():
             raise ValueError("project %r already tracked" % (proj_id,))
     else:
-        suggested = shortid.suggest(ctx.cfg, title, ctx.dh, run=namer)
+        suggested = shortid.suggest(ctx.cfg, title, ctx.dh, run=namer,
+                                    effects=ctx.effects)
         proj_id = store.unique_proj_id(ctx.dh, suggested or store.slugify(title))
 
     for existing in store.list_projects(ctx.dh):
@@ -188,7 +253,7 @@ def track(ctx, link, title=None, owner=None, locale=None, proj_id=None,
     node_dir.mkdir(parents=True, exist_ok=True)
     store.save_state(ctx.dh, proj_id, state)
 
-    sync_treemap(ctx, tree)
+    _sync_treemap(ctx, tree)
     tree_link = treemap_mod.permalink(tree, ctx.cfg, nid)
     state["tree_permalink"] = tree_link
 
@@ -205,11 +270,18 @@ def track(ctx, link, title=None, owner=None, locale=None, proj_id=None,
         "feed_permalink": ctx.permalink(channel, feed_ts),
         "tree_permalink": tree_link,
     }, tree=tree, proj_id=proj_id)
-    announce_ts = ctx.slack.post(channel, announce, thread_ts=thread_ts)
+    # What was already in the thread before we said anything. Setting the cursor
+    # to our own announce skipped whatever people posted during the handful of
+    # Slack round-trips above; the announce itself is filtered by its identity
+    # prefix, so it does not need to be jumped over.
+    seen = ctx.slack.thread(channel, thread_ts, limit=200)
+    latest_before = seen[-1]["ts"] if seen else thread_ts
 
-    state["cursor"] = announce_ts
+    announce_ts = post_into_thread(ctx, channel, announce, thread_ts, agent)
+
+    state["cursor"] = latest_before
     store.save_state(ctx.dh, proj_id, state)
-    sync_treemap(ctx, tree)
+    _sync_treemap(ctx, tree)
 
     return {"proj_id": proj_id, "node_id": nid, "feed_ts": feed_ts,
             "announce_ts": announce_ts, "tree_permalink": tree_link,
@@ -220,6 +292,11 @@ def track(ctx, link, title=None, owner=None, locale=None, proj_id=None,
 
 def fork(ctx, proj_id, parent_nid, title, agent=None):
     """Open a sub-problem: new thread, new feed, edge written now."""
+    with tree_lock(ctx, proj_id):
+        return _fork(ctx, proj_id, parent_nid, title, agent=agent)
+
+
+def _fork(ctx, proj_id, parent_nid, title, agent=None):
     tree = ctx.tree(proj_id)
     parent_state = store.load_state(ctx.dh, proj_id, parent_nid)
     channel = parent_state["channel"]
@@ -279,7 +356,7 @@ def fork(ctx, proj_id, parent_nid, title, agent=None):
         "feed_permalink": ctx.permalink(channel, feed_ts),
         "tree_permalink": tree_link,
     }, tree=tree, proj_id=proj_id)
-    ctx.slack.post(channel, announce, thread_ts=parent_state["thread_ts"])
+    post_into_thread(ctx, channel, announce, parent_state["thread_ts"], agent)
 
     store.save_state(ctx.dh, proj_id, child_state)
     sync_treemap(ctx, tree)
@@ -363,8 +440,8 @@ def ack_return(ctx, proj_id, nid, agent=None, summary=None):
         "summary": summary,
         "feed_permalink": feed_permalink,
     }, tree=tree, proj_id=proj_id)
-    ts = ctx.slack.post(parent_state["channel"], text,
-                        thread_ts=parent_state["thread_ts"])
+    ts = post_into_thread(ctx, parent_state["channel"], text,
+                          parent_state["thread_ts"], agent)
     # Nothing is recorded about the fact that a return happened. `return` is a
     # convenience for drafting the summary, not a step in a lifecycle: a human
     # who types the conclusion into the parent thread themselves has closed the
@@ -377,6 +454,11 @@ def ack_return(ctx, proj_id, nid, agent=None, summary=None):
 
 
 def set_status(ctx, proj_id, nid, status, reason="", agent=None):
+    with tree_lock(ctx, proj_id):
+        return _set_status(ctx, proj_id, nid, status, reason=reason, agent=agent)
+
+
+def _set_status(ctx, proj_id, nid, status, reason="", agent=None):
     tree = ctx.tree(proj_id)
     state = store.load_state(ctx.dh, proj_id, nid)
     tree.set_status(nid, status)
@@ -404,6 +486,11 @@ def set_status(ctx, proj_id, nid, status, reason="", agent=None):
 
 
 def rename(ctx, proj_id, nid, title):
+    with tree_lock(ctx, proj_id):
+        return _rename(ctx, proj_id, nid, title)
+
+
+def _rename(ctx, proj_id, nid, title):
     """Retitle a node everywhere it already got written.
 
     `track` derives a title from the thread's first line, which is a guess —
@@ -440,4 +527,46 @@ def reply(ctx, proj_id, nid, body, agent=None):
     agent = agent or ctx.agent(state)
     text = ctx.render("reply.md", {"agent": agent, "body": body},
                       tree=tree, proj_id=proj_id)
+    return post_into_thread(ctx, state["channel"], text, state["thread_ts"],
+                            agent)
+
+
+def post_notice(ctx, proj_id, nid, template, agent=None, **values):
+    """A one-line notice from Canopy into the node's thread."""
+    tree = ctx.tree(proj_id)
+    state = store.load_state(ctx.dh, proj_id, nid)
+    agent = agent or ctx.agent(state)
+    text = ctx.render(template, dict(values, agent=agent), tree=tree,
+                      proj_id=proj_id)
+    _must_be_recognisable(text, agent)
     return ctx.slack.post(state["channel"], text, thread_ts=state["thread_ts"])
+
+
+def post_into_thread(ctx, channel, text, thread_ts, agent):
+    """Every message Canopy puts inside a watched thread goes through here.
+
+    The check used to sit on `reply` and `post_notice` only, so
+    `fork-announce.md` and `return-post.md` — both of which land in a *parent*
+    node's thread, before that node's cursor — could be edited into something
+    Canopy no longer recognises as its own, and the parent would then wake on
+    its own announcement every tick.
+    """
+    _must_be_recognisable(text, agent)
+    return ctx.slack.post(channel, text, thread_ts=thread_ts)
+
+
+def _must_be_recognisable(text, agent):
+    """Refuse to post anything Canopy could not recognise as its own.
+
+    The tick skips its own messages by looking for the identity prefix. Edit
+    `reply.md` so the prefix moves or changes — which the whole
+    every-byte-is-a-template design invites — and Canopy answers its own reply,
+    every tick, burning a worker each time. Fail here, on the machine of the
+    person who just edited the template, instead of at 3am in the channel.
+    """
+    from . import mentions
+    if not mentions.is_own_post(text, [agent]):
+        raise ValueError(
+            "this template renders a message Canopy cannot recognise as its "
+            "own, which would make it reply to itself every tick; keep the "
+            "`[%s]` prefix at the start: %r" % (agent, text[:80]))

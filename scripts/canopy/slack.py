@@ -39,10 +39,8 @@ def degrade_links(text):
 
 
 def _run(argv):
-    proc = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    return (proc.returncode,
-            proc.stdout.decode("utf-8", "replace"),
-            proc.stderr.decode("utf-8", "replace"))
+    from . import effects as effects_mod
+    return effects_mod.DEFAULT.run(argv)
 
 
 def _http(url, data, token):
@@ -70,7 +68,7 @@ class Slack(object):
         self.escapes_on_edit = escapes_on_edit
 
     @classmethod
-    def from_config(cls, cfg, **kwargs):
+    def from_config(cls, cfg, effects=None, **kwargs):
         backend = cfg.get("slack_backend", "slackcli")
         token = None
         if backend == "api":
@@ -84,6 +82,8 @@ class Slack(object):
         # cron has no shell profile, so a PATH lookup for `slackcli` fails
         # there even though it works in a terminal. Use the resolved path.
         cli = cfg.get("slack_cli_path") or cfg.get("slack_cli") or "slackcli"
+        if effects is not None and "run" not in kwargs:
+            kwargs["run"] = lambda argv: effects.run(argv)
         return cls(cli=cli, workspace=cfg.get("slack_workspace"),
                    backend=backend, token=token,
                    escapes_on_edit=bool(cfg.get("slack_cli_escapes_on_edit", True)),

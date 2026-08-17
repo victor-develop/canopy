@@ -17,7 +17,7 @@ def test_recalibrate_reads_history_in_chunks(ctx, slack, tracked):
 
     chunks = []
 
-    def fake_run(cfg, prompt, node_dir, out_file=None):
+    def fake_run(cfg, prompt, node_dir, out_file=None, **kw):
         chunks.append(prompt)
         return "第 %d 段结论" % len(chunks)
 
@@ -35,7 +35,7 @@ def test_recalibrate_carries_earlier_notes_into_later_chunks(ctx, slack, tracked
     seed_history(slack, state, 25)
     prompts = []
 
-    def fake_run(cfg, prompt, node_dir, out_file=None):
+    def fake_run(cfg, prompt, node_dir, out_file=None, **kw):
         prompts.append(prompt)
         return "结论 %d" % len(prompts)
 

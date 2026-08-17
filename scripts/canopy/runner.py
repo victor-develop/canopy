@@ -16,18 +16,15 @@ from pathlib import Path
 from .errors import RunnerError
 
 
-def _run(argv, prompt, cwd, timeout=None):
+def _run(argv, prompt, cwd, timeout=None, effects=None):
     """A hung worker holds its node's lock, so every run is time-boxed."""
+    from . import effects as effects_mod
     try:
-        proc = subprocess.run(argv, input=prompt.encode("utf-8"),
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              cwd=str(cwd) if cwd else None, timeout=timeout)
+        return (effects or effects_mod.DEFAULT).run(
+            argv, stdin=prompt, timeout=timeout, cwd=cwd)
     except subprocess.TimeoutExpired:
         raise RunnerError("runner did not finish within %ss: %s"
                           % (timeout, " ".join(argv)))
-    return (proc.returncode,
-            proc.stdout.decode("utf-8", "replace"),
-            proc.stderr.decode("utf-8", "replace"))
 
 
 def resolve_path(runner, which=None):
@@ -79,22 +76,31 @@ def build_argv(cfg, node_dir, out_file=None):
     )
 
 
-def run(cfg, prompt, node_dir, out_file=None, exec_fn=None, timeout=None):
+def run(cfg, prompt, node_dir, out_file=None, exec_fn=None, timeout=None,
+        effects=None):
     """-> the worker's last message.
 
     Prefers codex's `-o` file when it exists, since stdout also carries the
     run's own chatter; falls back to stdout for runners without that flag.
     """
     argv = build_argv(cfg, node_dir, out_file=out_file)
+    # Only trust the file if this argv actually asked for it, and never trust
+    # what was in it before. `claude` and a custom `cmd` take no `-o`, so a
+    # leftover file from a codex-era run was being read back as this run's
+    # answer, every time.
+    wants_file = out_file and "-o" in argv
+    if wants_file and Path(out_file).exists():
+        Path(out_file).unlink()
     if timeout is None:
         timeout = cfg.get("runner_timeout_seconds") or None
     if exec_fn:
         code, out, err = exec_fn(argv, prompt, node_dir)
     else:
-        code, out, err = _run(argv, prompt, node_dir, timeout=timeout)
+        code, out, err = _run(argv, prompt, node_dir, timeout=timeout,
+                              effects=effects)
     if code != 0:
         raise RunnerError("runner exited %s: %s" % (code, (err or out).strip()[:500]))
-    if out_file and Path(out_file).exists():
+    if wants_file and Path(out_file).exists():
         text = Path(out_file).read_text(encoding="utf-8")
         if text.strip():
             return text.strip()

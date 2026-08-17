@@ -54,12 +54,45 @@ def test_lock_blocks_a_second_worker(tmp_path):
         locks.acquire(tmp_path, pid=5678, now=101, alive=lambda pid: True)
 
 
-def test_stale_lock_is_broken(tmp_path):
+def test_a_live_worker_keeps_its_lock_for_as_long_as_it_plausibly_runs(tmp_path):
+    """`recalibrate` can legitimately run for hours, so a 30-minute staleness
+    rule must not break its lock — but pids get recycled, so there is still an
+    upper bound, or a SIGKILLed worker parks the node forever."""
     locks.acquire(tmp_path, pid=1234, now=100, alive=lambda pid: True)
-    # Older than the staleness timeout: a worker that died without releasing
-    # must not park a node forever.
-    assert locks.acquire(tmp_path, pid=5678, now=100 + 3600, stale_after=1800,
+    assert locks.is_held(tmp_path, now=100 + 3 * 3600, stale_after=1800,
                          alive=lambda pid: True)
+    assert not locks.is_held(tmp_path, now=100 + 7 * 3600, stale_after=1800,
+                             alive=lambda pid: True)
+
+
+def test_eperm_means_the_process_exists(tmp_path):
+    """`os.kill(pid, 0)` on someone else's process raises PermissionError;
+    reading that as "dead" let two workers into one node."""
+    import errno
+    import os as _os
+
+    def kill(pid, sig):
+        raise PermissionError(errno.EPERM, "not yours")
+
+    real = _os.kill
+    _os.kill = kill
+    try:
+        assert locks._alive(4242) is True
+    finally:
+        _os.kill = real
+
+
+def test_a_pidless_lock_is_broken_once_stale(tmp_path):
+    locks.lock_path(tmp_path).write_text('{"started": 100}', encoding="utf-8")
+    assert locks.is_held(tmp_path, now=200, stale_after=1800)
+    assert not locks.is_held(tmp_path, now=100 + 3600, stale_after=1800)
+
+
+def test_release_never_removes_someone_elses_lock(tmp_path):
+    locks.acquire(tmp_path, pid=1234, now=100, alive=lambda pid: True)
+    assert locks.release(tmp_path, pid=9999) is False
+    assert locks.lock_path(tmp_path).exists()
+    assert locks.release(tmp_path, pid=1234) is True
 
 
 def test_dead_process_lock_is_broken(tmp_path):

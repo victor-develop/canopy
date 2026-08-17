@@ -1,0 +1,283 @@
+"""The ops page, served locally.
+
+This is the one long-lived process in the design, so it is kept as harmless as
+possible: it **only reads disk and renders**. It never talks to Slack, never
+starts a runner, never writes state. Kill it and nothing is lost — the cron tick
+keeps working, and the next `canopy serve` picks up wherever the disk is.
+
+Bound to loopback on purpose. The snapshot carries channel names, thread titles
+and absolute paths from this machine; that is local operational data, not
+something to expose on a LAN.
+"""
+
+import json
+import os
+import signal
+import socket
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from . import opsview, store
+
+STATE = "serve.json"
+DEFAULT_PORT = 8787
+HOST = "127.0.0.1"
+# A viewer nobody is looking at is just a process leak with a port. Exit rather
+# than outlive the person who opened it.
+IDLE_TIMEOUT = 1800
+# Threads are unbounded by default; any local process could open connections
+# until the machine complains. Eight is plenty for one person's browser.
+MAX_CONCURRENCY = 8
+
+
+def state_path(dh):
+    from pathlib import Path
+    return Path(dh) / STATE
+
+
+def _alive(pid):
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+    except (OSError, TypeError, ValueError):
+        return False
+    return True
+
+
+def status(dh):
+    """-> {"pid", "port", "url", "running"} for whatever was started last."""
+    info = store.read_json(state_path(dh), default=None)
+    if not info:
+        return {"running": False}
+    info = dict(info)
+    info["running"] = _alive(info.get("pid")) and bool(info.get("port"))
+    info["url"] = ("http://%s:%s/" % (HOST, info["port"])) if info.get("port") else None
+    return info
+
+
+def stop(dh):
+    info = status(dh)
+    if not info.get("running"):
+        state_path(dh).unlink() if state_path(dh).exists() else None
+        return False
+    try:
+        os.kill(int(info["pid"]), signal.SIGTERM)
+    except OSError:
+        pass
+    if state_path(dh).exists():
+        state_path(dh).unlink()
+    return True
+
+
+def free_port(preferred=DEFAULT_PORT):
+    """Take the configured port if it is free, otherwise let the OS pick one."""
+    for port in (preferred, 0):
+        sock = socket.socket()
+        try:
+            sock.bind((HOST, port))
+            chosen = sock.getsockname()[1]
+            sock.close()
+            return chosen
+        except OSError:
+            sock.close()
+    raise OSError("no port available")
+
+
+def make_handler(dh, cfg, root=None, seen=None, run=None, slots=None):
+    class Handler(BaseHTTPRequestHandler):
+        # A socket that connects and then says nothing blocks `readline`
+        # forever. On a single-threaded server that wedges every later request
+        # *and* `shutdown()`, so the idle watchdog could never fire and the
+        # process outlived everything. Chrome's speculative preconnect is
+        # enough to trigger it; no attacker needed.
+        timeout = 10
+        def _send(self, code, body, content_type):
+            payload = body.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def do_GET(self):  # noqa: N802 - http.server's interface
+            if slots is not None and not slots.acquire(blocking=False):
+                self._send(503, "busy", "text/plain; charset=utf-8")
+                return
+            try:
+                self._handle()
+            finally:
+                if slots is not None:
+                    slots.release()
+
+        def _handle(self):
+            if seen is not None:
+                seen["at"] = time.time()
+            path = self.path.split("?")[0]
+            if path in ("/", "/index.html"):
+                data = opsview.snapshot(dh, cfg, run=run)
+                self._send(200, opsview.render(data, root=root), "text/html; charset=utf-8")
+            elif path == "/api/snapshot":
+                data = opsview.snapshot(dh, cfg, run=run)
+                self._send(200, opsview.embed(data),
+                           "application/json; charset=utf-8")
+            else:
+                self._send(404, "not found", "text/plain; charset=utf-8")
+
+        def log_message(self, *args):
+            """Quiet: this runs in the background of someone's terminal."""
+
+    return Handler
+
+
+def make_server(dh, cfg, root=None, port=None, seen=None, run=None):
+    port = free_port(port or int(cfg.get("serve_port", DEFAULT_PORT)))
+    # `run` is the crontab reader. The page polls every 5s, and snapshot()
+    # shells out to `crontab -l` — 720 forks an hour from a page that claims to
+    # only read disk. Cache it.
+    server = ThreadingHTTPServer((HOST, port),
+                                 make_handler(dh, cfg, root=root, seen=seen,
+                                              run=run or _cached_crontab(),
+                                              slots=threading.BoundedSemaphore(
+                                                  MAX_CONCURRENCY)))
+    server.daemon_threads = True
+    return server
+
+
+def _cached_crontab(ttl=60):
+    """Read the crontab at most once per `ttl` seconds."""
+    from . import cron
+    return _cached_crontab_from(cron._run, ttl=ttl)
+
+
+def _cached_crontab_from(reader, ttl=60):
+    cache = {"at": 0.0, "value": None}
+
+    def run(argv, stdin=""):
+        if argv[:2] != ["crontab", "-l"]:
+            return reader(argv, stdin)
+        now = time.time()
+        if cache["value"] is None or now - cache["at"] > ttl:
+            cache["value"] = reader(argv, stdin)
+            cache["at"] = now
+        return cache["value"]
+
+    return run
+
+
+def _idle_watchdog(httpd, seen, timeout, stop_after=None):
+    """Shut the server down once nobody has asked it anything for `timeout`."""
+    def loop():
+        checks = 0
+        while True:
+            time.sleep(min(30, max(1, timeout / 10.0)))
+            checks += 1
+            if time.time() - seen["at"] > timeout:
+                httpd.shutdown()
+                return
+            if stop_after is not None and checks >= stop_after:
+                return
+    thread = threading.Thread(target=loop, daemon=True)
+    thread.start()
+    return thread
+
+
+def serve(dh, cfg, root=None, port=None, record=True, idle_timeout=None):
+    """Run until interrupted, or until nobody has looked for a while."""
+    seen = {"at": time.time()}
+    httpd = make_server(dh, cfg, root=root, port=port, seen=seen)
+    timeout = idle_timeout if idle_timeout is not None else \
+        int(cfg.get("serve_idle_timeout", IDLE_TIMEOUT))
+    if timeout:
+        _idle_watchdog(httpd, seen, timeout)
+    if record:
+        store.write_json(state_path(dh),
+                         {"pid": os.getpid(), "port": httpd.server_port})
+    try:
+        httpd.serve_forever()
+    finally:
+        # Only clear the record if it is still ours: a foreground `serve` used
+        # to wipe the background viewer's entry on Ctrl-C, orphaning it.
+        if record:
+            current = store.read_json(state_path(dh), default=None) or {}
+            if current.get("pid") == os.getpid() and state_path(dh).exists():
+                state_path(dh).unlink()
+
+
+def serve_in_thread(dh, cfg, root=None, port=None, run=None):
+    """For tests: a real server on a real port, no subprocess."""
+    httpd = make_server(dh, cfg, root=root, port=port, run=run)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    return httpd, "http://%s:%s" % (HOST, httpd.server_port)
+
+
+def start_background(dh, cfg, root=None, port=None, spawn=None, effects=None):
+    """Start the viewer if it is not already up. -> status dict.
+
+    Reuses a live one rather than starting a second: `track` calls this every
+    time, and nobody wants a port-per-tracked-tree.
+    """
+    current = status(dh)
+    if current.get("running") and _responds(current.get("port")):
+        return current
+    if current.get("running"):
+        # Recorded pid is alive but nothing answers on the port: a stale record,
+        # or someone else's process reusing the pid. Do not stack another one on
+        # top without clearing it first.
+        stop(dh)
+
+    import sys
+    from pathlib import Path
+
+    # Ask for a port, do not claim it: between our bind test and the child's
+    # bind, anything could take it. The child records what it actually got.
+    wanted = port or int(cfg.get("serve_port", DEFAULT_PORT))
+    argv = [sys.executable, str(Path(__file__).resolve().parents[1] / "canopy_main.py"),
+            "serve", "--port", str(wanted), "--no-open"]
+    if spawn is None and effects is not None:
+        spawn = lambda argv, dh: effects.spawn(argv)
+    spawn = spawn or _spawn
+    # Placeholder BEFORE spawning, so the child's own record is never clobbered
+    # by ours. The port is unknown until the child says so: writing the wanted
+    # port and then waiting for "something answers" reported a stranger's
+    # service whenever that port was already taken, and never self-corrected
+    # because the stranger kept answering.
+    store.write_json(state_path(dh), {"pid": None, "port": None})
+    pid = spawn(argv, dh)
+
+    deadline = time.time() + float(cfg.get("serve_start_timeout", 3))
+    while time.time() < deadline:
+        recorded = store.read_json(state_path(dh), default={}) or {}
+        if recorded.get("port") and _responds(recorded["port"]):
+            break
+        time.sleep(0.05)
+    final = store.read_json(state_path(dh), default={}) or {}
+    port_final = final.get("port")
+    if not port_final:
+        # It never came up. Record the pid so `serve --stop` can still reach it.
+        store.write_json(state_path(dh), {"pid": pid, "port": None})
+    return {"pid": final.get("pid") or pid, "port": port_final,
+            "running": bool(port_final),
+            "url": ("http://%s:%s/" % (HOST, port_final)) if port_final else None}
+
+
+def _responds(port):
+    if not port:
+        return False
+    sock = socket.socket()
+    sock.settimeout(0.3)
+    try:
+        sock.connect((HOST, int(port)))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def _spawn(argv, dh):
+    from . import effects as effects_mod
+    return effects_mod.DEFAULT.spawn(argv)

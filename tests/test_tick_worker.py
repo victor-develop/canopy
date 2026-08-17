@@ -15,8 +15,10 @@ def no_llm(*args, **kwargs):
 
 
 def test_idle_node_never_reaches_a_worker(ctx, tracked):
+    """`self-only` here means the only thing since the cursor is Canopy's own
+    announce — still zero tokens, still no worker."""
     results = tick_mod.tick(ctx, handle=no_llm)
-    assert [r["verdict"] for r in results] == ["no-new"]
+    assert [r["verdict"] for r in results] == ["self-only"]
 
 
 def test_untracked_node_is_skipped_entirely(ctx, slack, tracked):
@@ -43,7 +45,7 @@ def test_chatter_goes_to_the_light_summarizer(ctx, slack, tracked):
     add_msg(slack, state, "1700001000.000100", "U2", "我觉得是索引问题")
     calls = []
 
-    def fake_run(cfg, prompt, node_dir, out_file=None):
+    def fake_run(cfg, prompt, node_dir, out_file=None, **kw):
         calls.append(prompt)
         return "决定先加复合索引"
 
@@ -69,7 +71,7 @@ def test_mention_wakes_a_full_worker_and_posts_its_reply(ctx, slack, tracked):
     add_msg(slack, state, "1700001000.000100", "U2", "@canopy 这个能今天出结论吗")
     prompts = []
 
-    def fake_run(cfg, prompt, node_dir, out_file=None):
+    def fake_run(cfg, prompt, node_dir, out_file=None, **kw):
         prompts.append(prompt)
         return "今天出不了,缺 DBA 的确认。"
 
@@ -153,16 +155,26 @@ def test_lock_is_released_even_when_the_worker_blows_up(ctx, slack, tracked):
     assert not locks.lock_path(node_dir).exists()
 
 
-def test_classify_prefers_a_command_over_a_question():
+def test_classify_keeps_the_command_and_the_question():
     messages = [{"ts": "1", "user": "U", "text": "@canopy 这个怎么办"},
                 {"ts": "2", "user": "U", "text": "@canopy fork 慢查询"}]
-    kind, detail = worker.classify(messages, ["canopy"])
-    assert kind == "command" and detail["command"] == "fork"
+    plan = worker.classify(messages, ["canopy"])
+    assert plan["kind"] == "command"
+    assert [c["command"] for c in plan["commands"]] == ["fork"]
+    assert plan["question"]["message"]["ts"] == "1"
+
+
+def test_classify_keeps_every_command_in_order():
+    """Two people forking inside one tick window must produce two children."""
+    messages = [{"ts": "1", "user": "U", "text": "@canopy fork 甲"},
+                {"ts": "2", "user": "V", "text": "@canopy fork 乙"}]
+    plan = worker.classify(messages, ["canopy"])
+    assert [c["arg"] for c in plan["commands"]] == ["甲", "乙"]
 
 
 def test_classify_falls_through_to_chatter():
-    kind, _ = worker.classify([{"ts": "1", "user": "U", "text": "hi"}], ["canopy"])
-    assert kind == "chatter"
+    plan = worker.classify([{"ts": "1", "user": "U", "text": "hi"}], ["canopy"])
+    assert plan["kind"] == "chatter" and not plan["commands"]
 
 
 def test_canopys_own_reply_does_not_wake_a_worker(ctx, slack, tracked):
@@ -180,7 +192,7 @@ def test_a_real_message_after_canopys_own_still_gets_handled(ctx, slack, tracked
     add_msg(slack, state, "1700001001.000100", "U2", "那就先加索引")
     seen = {}
 
-    def fake_run(cfg, prompt, node_dir, out_file=None):
+    def fake_run(cfg, prompt, node_dir, out_file=None, **kw):
         seen["prompt"] = prompt
         return "决定先加索引"
 
@@ -189,3 +201,134 @@ def test_a_real_message_after_canopys_own_still_gets_handled(ctx, slack, tracked
     assert "那就先加索引" in seen["prompt"]
     assert "我查了下日志" not in seen["prompt"]      # its own post is filtered out
     assert state_of(ctx, tracked)["cursor"] == "1700001001.000100"
+
+
+def test_two_forks_in_one_batch_both_land(ctx, slack, tracked):
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "@canopy fork 慢查询定位")
+    add_msg(slack, state, "1700001001.000100", "U3", "@canopy fork 重试风暴")
+
+    tick_mod.tick(ctx, run=no_llm)
+
+    tree = ctx.tree(proj_id)
+    titles = [tree.node(c)["title"] for c in tree.children(nid)]
+    assert titles == ["慢查询定位", "重试风暴"]
+
+
+def test_a_bad_command_does_not_kill_the_tick(ctx, slack, tracked):
+    """`ack return` with no draft raises ValueError; it must not escape."""
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "@canopy ack return")
+
+    results = tick_mod.tick(ctx, run=no_llm)
+    assert results[0]["outcome"]["error"].startswith("ValueError")
+
+
+def test_a_failing_batch_is_retried_then_skipped(ctx, slack, tracked):
+    """Retry, but not forever: the same message must not replay every 5 minutes
+    for the rest of the tree's life."""
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    state = state_of(ctx, tracked)
+    before = state["cursor"]
+    add_msg(slack, state, "1700001000.000100", "U2", "@canopy ack return")
+
+    for _ in range(2):
+        tick_mod.tick(ctx, run=no_llm)
+        assert state_of(ctx, tracked)["cursor"] == before      # still retrying
+
+    tick_mod.tick(ctx, run=no_llm)
+    assert state_of(ctx, tracked)["cursor"] == "1700001000.000100"   # gave up
+
+
+def test_a_command_is_not_re_executed_when_the_batch_retries(ctx, slack, tracked):
+    """`fork` is not idempotent. One fork plus one bad command in the same batch
+    used to grow a duplicate child — and three Slack messages — every tick."""
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "@canopy fork 慢查询定位")
+    add_msg(slack, state, "1700001001.000100", "U3", "@canopy ack return")
+
+    for _ in range(3):
+        tick_mod.tick(ctx, run=no_llm)
+
+    tree = ctx.tree(proj_id)
+    titles = [tree.node(c)["title"] for c in tree.children(nid)]
+    assert titles == ["慢查询定位"]          # exactly one, after three ticks
+
+
+def test_a_busy_thread_still_gives_up_on_a_poison_message(ctx, slack, tracked):
+    """The retry counter keys on the oldest message in the failing batch. Keyed
+    on the newest, a thread where people keep talking never gave up: the cursor
+    froze and every tick re-read a larger batch."""
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "@canopy ack return")
+
+    for i in range(4):
+        add_msg(slack, state, "17000010%02d.000100" % (10 + i), "U3", "继续聊")
+        tick_mod.tick(ctx, run=lambda *a, **k: "SKIP")
+
+    cursor = state_of(ctx, tracked)["cursor"]
+    assert float(cursor) > 1700001000.000100      # stepped over the poison
+
+
+def test_only_one_tick_runs_at_a_time(ctx, slack, tracked):
+    """A tick can outrun the cron interval (a worker holds a node for its whole
+    timeout), so without this ticks stack and each pays for the same work."""
+    from canopy import locks
+    # Real wall clock: the lock has an upper age bound, so a lock stamped with
+    # the fixture's frozen 2023 timestamp would read as ancient and be broken.
+    locks.acquire(ctx.dh, pid=999, alive=lambda pid: True)
+    try:
+        results = tick_mod.tick(ctx, alive=lambda pid: True, handle=no_llm)
+        assert results == [{"verdict": "tick-already-running"}]
+    finally:
+        locks.release(ctx.dh, pid=999)
+
+
+def test_the_tick_lock_is_released_afterwards(ctx, tracked):
+    from canopy import locks
+    tick_mod.tick(ctx, handle=no_llm)
+    assert not locks.lock_path(ctx.dh).exists()
+
+
+def test_canopy_does_not_wake_the_parent_with_its_own_fork_announce(ctx, slack,
+                                                                   tracked):
+    """The announce lands in the parent's thread, before the parent's cursor.
+    If Canopy cannot recognise it, the parent wakes on it every tick forever."""
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "@canopy fork 慢查询定位")
+    tick_mod.tick(ctx, run=no_llm)          # the fork, plus its announce
+
+    results = tick_mod.tick(ctx, handle=no_llm)   # would raise if it woke a worker
+
+    parent = [r for r in results if r["node"] == nid][0]
+    assert parent["verdict"] in ("self-only", "no-new")
+
+
+def test_canopy_does_not_answer_its_own_reply(ctx, slack, tracked):
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "@canopy 这个怎么办")
+    tick_mod.tick(ctx, run=lambda *a, **k: "我的答复")
+
+    results = tick_mod.tick(ctx, handle=no_llm)
+    assert results[0]["verdict"] == "self-only"
+
+
+def test_a_question_is_answered_once_even_when_the_batch_retries(ctx, slack,
+                                                                tracked):
+    """One poison command plus one question posted the same answer three times
+    and paid for three full workers."""
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "@canopy ack return")
+    add_msg(slack, state, "1700001001.000100", "U3", "@canopy 你怎么看")
+
+    for _ in range(4):
+        tick_mod.tick(ctx, run=lambda *a, **k: "我的答复")
+
+    replies = [p for p in slack.posted if "我的答复" in (p["text"] or "")]
+    assert len(replies) == 1

@@ -47,14 +47,15 @@ def sanitize(raw):
     return candidate
 
 
-def suggest(cfg, title, cwd, run=None):
+def suggest(cfg, title, cwd, run=None, effects=None):
     """-> a short id, or None to let the caller fall back to the slug."""
     timeout = cfg.get("shortid_timeout_seconds") or 90
     try:
         if run:
             answer = run(cfg, PROMPT % (title,), cwd)
         else:
-            answer = runner_mod.run(cfg, PROMPT % (title,), cwd, timeout=timeout)
+            answer = runner_mod.run(cfg, PROMPT % (title,), cwd, timeout=timeout,
+                                    effects=effects)
     except CanopyError:
         return None
     except OSError:

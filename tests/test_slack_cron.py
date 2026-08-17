@@ -219,3 +219,33 @@ def test_one_parked_tree_does_not_stop_the_others(dh):
     make_tree(dh, "edd", status="active")
     run, _ = recorder([(0, "*/5 * * * * tick # canopy\n")])
     assert schedule.sync(dh, {}, run=run) == schedule.UNCHANGED
+
+
+def test_the_suite_cannot_touch_the_real_crontab(fake_crontab):
+    """Guard for the guard: `canopy.cron._run` is stubbed for every test."""
+    from canopy import cron
+    cron.install("/bin/tick", 5, data_home="/tmp/x")
+    assert "# canopy" in fake_crontab["text"]
+
+
+def test_the_effects_door_refuses_anything_it_was_not_taught(no_machine_effects):
+    """The guard that replaces three symbol patches: a new side effect added
+    tomorrow fails here instead of on someone's laptop."""
+    import pytest as _pytest
+    from canopy import effects as effects_mod
+
+    # EffectEscaped derives from BaseException so application code — which
+    # catches Exception to keep a tick alive — cannot swallow the alarm.
+    assert not issubclass(effects_mod.EffectEscaped, Exception)
+    with _pytest.raises(effects_mod.EffectEscaped):
+        no_machine_effects.spawn(["some-new-daemon"])
+    assert effects_mod.DEFAULT is no_machine_effects       # nothing bypasses it
+
+
+def test_recording_effects_report_what_was_attempted():
+    from canopy import effects as effects_mod
+    rec = effects_mod.Recording(run=lambda argv, stdin="": (0, "ok", ""))
+    assert rec.run(["crontab", "-l"]) == (0, "ok", "")
+    assert rec.calls[0]["argv"] == ["crontab", "-l"]
+    rec.open_url("http://127.0.0.1:1/")
+    assert rec.opened == ["http://127.0.0.1:1/"]

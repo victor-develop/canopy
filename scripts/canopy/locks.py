@@ -11,7 +11,7 @@ import os
 import time
 from pathlib import Path
 
-from .errors import LockedError
+from .errors import LockedError  # re-exported for callers
 
 LOCK_NAME = "lock"
 
@@ -32,37 +32,50 @@ def read(node_dir):
 
 
 def _alive(pid):
+    """Does this pid exist? EPERM means it does — it just isn't ours."""
     if not pid:
         return False
     try:
         os.kill(int(pid), 0)
-    except OSError:
+    except ProcessLookupError:
         return False
-    except (TypeError, ValueError):
+    except PermissionError:
+        return True
+    except (OSError, TypeError, ValueError):
         return False
     return True
 
 
-def is_held(node_dir, now=None, stale_after=1800, alive=None):
+MAX_AGE = 6 * 3600
+
+
+def is_held(node_dir, now=None, stale_after=1800, alive=None, max_age=MAX_AGE):
     info = read(node_dir)
     if info is None:
         return False
     now = time.time() if now is None else now
-    if now - float(info.get("started") or 0) > stale_after:
-        return False
-    if not info.get("pid"):
-        # Unreadable lock: fall back to the staleness window rather than
-        # breaking it. Two workers posting into one thread is worse than one
-        # node waiting a few ticks.
-        return True
-    alive_fn = alive or _alive
-    return alive_fn(info.get("pid"))
+    age = now - float(info.get("started") or 0)
+    pid = info.get("pid")
+    if pid:
+        # A live process holds its lock as long as it needs — `recalibrate` can
+        # legitimately run for hours, and breaking its lock on a 30-minute rule
+        # put a second worker into the same node.
+        #
+        # But not forever: pids get recycled (macOS wraps at 99999), so a lock
+        # left behind by a SIGKILLed worker eventually names an unrelated live
+        # process, and without an upper bound that node was never watched again.
+        return (alive or _alive)(pid) and age <= max_age
+    # No readable pid: fall back to the staleness window rather than breaking it
+    # outright. Two workers in one thread is worse than one node waiting.
+    return age <= stale_after
 
 
-def acquire(node_dir, pid=None, now=None, stale_after=1800, alive=None):
+def acquire(node_dir, pid=None, now=None, stale_after=1800, alive=None,
+            max_age=MAX_AGE):
     node_dir = Path(node_dir)
     node_dir.mkdir(parents=True, exist_ok=True)
-    if is_held(node_dir, now=now, stale_after=stale_after, alive=alive):
+    if is_held(node_dir, now=now, stale_after=stale_after, alive=alive,
+               max_age=max_age):
         raise LockedError("node is locked: %s" % (node_dir,))
     now = time.time() if now is None else now
     payload = {"pid": pid if pid is not None else os.getpid(), "started": now}
@@ -70,12 +83,22 @@ def acquire(node_dir, pid=None, now=None, stale_after=1800, alive=None):
     return payload
 
 
-def release(node_dir):
+def release(node_dir, pid=None):
+    """Only ever remove your own lock.
+
+    A worker that overran and got its lock broken used to delete the *new*
+    holder's lock on the way out, leaving the node unlocked with a worker still
+    inside it.
+    """
     path = lock_path(node_dir)
-    if path.exists():
-        path.unlink()
-        return True
-    return False
+    if not path.exists():
+        return False
+    info = read(node_dir) or {}
+    mine = pid if pid is not None else os.getpid()
+    if info.get("pid") not in (None, mine):
+        return False
+    path.unlink()
+    return True
 
 
 class held(object):
@@ -93,5 +116,5 @@ class held(object):
                        stale_after=self.stale_after, alive=self.alive)
 
     def __exit__(self, *exc):
-        release(self.node_dir)
+        release(self.node_dir, pid=self.pid if self.pid is not None else None)
         return False
