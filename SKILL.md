@@ -412,6 +412,14 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
   goes up.
 - `ack return` — confirm; post the summary back into the **parent thread** as
   `[$agentName]: …`, linking the child's feed permalink.
+
+  **Returning is optional and unrecorded.** It is a convenience for drafting
+  the summary, not a step in a lifecycle. Somebody who types the conclusion
+  into the parent thread themselves has closed the sub-problem just as well —
+  that is the natural thing to do, and the summarizer picks it up into the
+  parent's feed like any other message. So nothing waits on a return, nothing
+  displays whether one happened, and no state records it. State that only some
+  paths maintain is state that lies.
 - `guide: <text>` — append to this node's `guide.md`; effective next tick.
 - `recalibrate` — rebuild this node's feed (Loop C).
 - `untrack` — stop watching this node; `track` starts again.

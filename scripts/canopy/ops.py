@@ -153,11 +153,6 @@ def sync_treemap(ctx, tree):
     return segments
 
 
-def _refresh_map(ctx, proj_id):
-    """Re-render the map after something a row displays has changed."""
-    sync_treemap(ctx, ctx.tree(proj_id))
-
-
 # -- track --------------------------------------------------------------------
 
 def track(ctx, link, title=None, owner=None, locale=None, proj_id=None,
@@ -319,9 +314,7 @@ def append_checkpoint(ctx, proj_id, nid, summary, author="", raw_permalink=None,
     feed = ctx.feed(proj_id, state, tree)
     result = feed.append(summary, author=author, date=_date(ctx), icon=icon,
                          raw_permalink=raw_permalink)
-    state["last_checkpoint_at"] = ctx.now()
     store.save_state(ctx.dh, proj_id, state)
-    _refresh_map(ctx, proj_id)
     return result
 
 
@@ -372,12 +365,14 @@ def ack_return(ctx, proj_id, nid, agent=None, summary=None):
     }, tree=tree, proj_id=proj_id)
     ts = ctx.slack.post(parent_state["channel"], text,
                         thread_ts=parent_state["thread_ts"])
+    # Nothing is recorded about the fact that a return happened. `return` is a
+    # convenience for drafting the summary, not a step in a lifecycle: a human
+    # who types the conclusion into the parent thread themselves has closed the
+    # sub-problem just as well, and the summarizer picks that up into the
+    # parent's feed like any other message. State that only some paths maintain
+    # is state that lies.
     state.pop("return_draft", None)
-    # The tree map links this: a node that reported back is visibly different
-    # from one that just went quiet.
-    state["return_ts"] = ts
     store.save_state(ctx.dh, proj_id, state)
-    _refresh_map(ctx, proj_id)
     return {"ts": ts, "parent": parent, "summary": summary}
 
 
