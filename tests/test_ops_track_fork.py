@@ -184,3 +184,32 @@ def test_rename_keeps_the_checkpoints_already_recorded(ctx, slack, tracked):
     ops.append_checkpoint(ctx, proj_id, nid, "决定加索引")
     ops.rename(ctx, proj_id, nid, "新标题")
     assert "决定加索引" in slack.text_of(tracked["feed_ts"])
+
+
+def test_the_child_thread_gets_a_link_to_its_own_feed(ctx, slack, tracked):
+    """The kickoff is posted before the feed exists, so it is edited afterwards.
+
+    Without the edit, the child thread is the one place in the tree with no way
+    to reach its own digest.
+    """
+    result = ops.fork(ctx, tracked["proj_id"], tracked["node_id"], "慢查询定位")
+    kickoff = slack.text_of(result["thread_ts"])
+    feed_url = ctx.permalink("C0PAY", result["feed_ts"])
+    assert "|智能总结>" in kickoff and feed_url in kickoff
+    # And it still points up and out.
+    assert "|上游>" in kickoff and "|trace tree>" in kickoff
+
+
+def test_the_kickoff_is_readable_before_the_feed_exists(ctx, slack, tracked):
+    posted = []
+    original_post = slack.post
+
+    def capture(channel, text, thread_ts=None):
+        posted.append(text)
+        return original_post(channel, text, thread_ts=thread_ts)
+
+    slack.post = capture
+    ops.fork(ctx, tracked["proj_id"], tracked["node_id"], "慢查询定位")
+    kickoff_as_posted = posted[0]
+    # Empty link degrades to its label rather than posting `<|智能总结>`.
+    assert "智能总结" in kickoff_as_posted and "<|" not in kickoff_as_posted

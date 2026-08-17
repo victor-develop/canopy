@@ -232,13 +232,21 @@ def fork(ctx, proj_id, parent_nid, title, agent=None):
     tree_link = treemap_mod.permalink(tree, ctx.cfg, parent_nid)
     parent_permalink = ctx.permalink(channel, parent_state["thread_ts"])
 
-    kickoff = ctx.render("fork-thread.md", {
-        "agent": agent,
-        "title": title,
-        "parent_permalink": parent_permalink,
-        "tree_permalink": tree_link,
-    }, tree=tree, proj_id=proj_id)
-    child_ts = ctx.slack.post(channel, kickoff)
+    def kickoff_text(feed_permalink):
+        return ctx.render("fork-thread.md", {
+            "agent": agent,
+            "title": title,
+            "parent_permalink": parent_permalink,
+            "feed_permalink": feed_permalink,
+            "tree_permalink": tree_link,
+        }, tree=tree, proj_id=proj_id)
+
+    # Chicken and egg: the feed can only be opened once the thread exists, and
+    # the thread only exists once this message is posted. So post it without the
+    # digest link — the empty link degrades to plain text — and edit it back in
+    # below. Otherwise the child thread is the one place in the tree with no way
+    # to reach its own feed.
+    child_ts = ctx.slack.post(channel, kickoff_text(""))
 
     child_id = store.node_id(channel, child_ts)
     tree.add_child(parent_nid, child_id, title, owner=parent_state.get("owner"))
@@ -264,6 +272,9 @@ def fork(ctx, proj_id, parent_nid, title, agent=None):
         "parent_permalink": parent_permalink,
         "tree_permalink": tree_link,
     })
+
+    ctx.slack.update(channel, child_ts,
+                     kickoff_text(ctx.permalink(channel, feed_ts)))
 
     announce = ctx.render("fork-announce.md", {
         "agent": agent,
