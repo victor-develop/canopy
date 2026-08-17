@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from . import config as config_mod
-from . import cron, noderef, ops, paths, runner as runner_mod
+from . import cron, noderef, ops, paths, runner as runner_mod, schedule
 from . import store, templates, tick as tick_mod, treemap as treemap_mod
 from . import treeview, worker
 from .errors import CanopyError, NodeRefError
@@ -46,13 +46,13 @@ def cmd_track(args):
         proj_id, nid = _resolve(ctx, args.link)
         result = ops.set_status(ctx, proj_id, nid, "active",
                                 reason=getattr(args, "reason", "") or "")
-        print("%s -> %s" % (nid, result["status"]))
+        print("%s -> %s%s" % (nid, result["status"], _cron_note(ctx)))
         return 0
     result = ops.track(ctx, args.link, title=args.title, owner=args.owner,
                        locale=args.locale, proj_id=args.project)
     if not args.no_cron:
         try:
-            config_mod.set_values(
+            ctx.cfg = config_mod.set_values(
                 ctx.dh,
                 runner_path=runner_mod.resolve_path(ctx.cfg.get("runner", "codex")),
                 slack_cli_path=runner_mod.resolve_path(
@@ -62,9 +62,7 @@ def cmd_track(args):
             raise CanopyError(
                 "%s\nNo cron job was registered — a tree that looks watched but "
                 "never ticks is worse than a failed track." % (exc,))
-        tick_cmd = "%s %s tick" % (sys.executable, Path(__file__).resolve().parents[1] / "canopy_main.py")
-        cron.install(tick_cmd, ctx.cfg.get("cron_interval_minutes", 5),
-                     data_home=str(ctx.dh))
+        schedule.sync(ctx.dh, ctx.cfg)
     print("tracked %s as `%s`" % (result["title"], result["proj_id"]))
     print("  feed     %s" % ctx.permalink(result["node_id"].split("-")[0],
                                           result["feed_ts"]))
@@ -237,8 +235,18 @@ def _status_cmd(args, status):
     proj_id, nid = _resolve(ctx, args.ref)
     result = ops.set_status(ctx, proj_id, nid, status,
                             reason=getattr(args, "reason", "") or "")
-    print("%s -> %s" % (nid, result["status"]))
+    print("%s -> %s%s" % (nid, result["status"], _cron_note(ctx)))
     return 0
+
+
+def _cron_note(ctx):
+    """Keep the cron entry in step with whether anything is still watched."""
+    outcome = schedule.sync(ctx.dh, ctx.cfg)
+    if outcome == schedule.REMOVED:
+        return "  (没有活跃节点了,cron 也撤了)"
+    if outcome == schedule.INSTALLED:
+        return "  (cron 装回来了)"
+    return ""
 
 
 def cmd_rename(args):
@@ -297,6 +305,9 @@ def cmd_tick(args):
     ctx = _ctx(args)
     try:
         results = tick_mod.tick(ctx)
+        # An `@canopy untrack` typed in Slack can retire the last active node;
+        # the entry that just woke us should go with it.
+        schedule.sync(ctx.dh, ctx.cfg)
     except Exception as exc:
         _log_tick(ctx.dh, "ERROR %s: %s" % (type(exc).__name__, exc))
         raise

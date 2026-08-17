@@ -416,6 +416,14 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
 - `recalibrate` — rebuild this node's feed (Loop C).
 - `untrack` — stop watching this node; `track` starts again.
 
+**The cron entry follows the tree, not the commands.** It exists exactly when at
+least one node anywhere is `active`: `track` puts it there, `untrack`-ing the
+last active node takes it away, and a tick that retires that node removes the
+entry that just woke it. Nobody should have to remember to install or remove it,
+and the two states you can otherwise reach are both bad — a tree that looks
+watched with no cron behind it, and a cron waking every five minutes to walk a
+tree where nothing is active.
+
 There is deliberately no `done`. A completion state needs a `reopen` to undo it,
 and then a rule for what "done" means while a child is still running. Watching
 is the only thing Canopy actually does, so watching is the only thing you

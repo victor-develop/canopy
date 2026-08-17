@@ -31,16 +31,16 @@ def test_track_registers_cron_and_prints_links(cli_env, capsys, monkeypatch):
     slack.add("C0PAY", "1699000001.000100", "1699000001.000100", "U1", "支付超时")
     installed = {}
     monkeypatch.setattr(cli.runner_mod, "resolve_path", lambda r: "/abs/codex")
-    monkeypatch.setattr(cli.cron, "install",
-                        lambda cmd, mins, data_home=None: installed.update(
-                            cmd=cmd, mins=mins))
+    monkeypatch.setattr(cli.schedule, "sync",
+                        lambda dh, cfg, **kw: installed.update(
+                            cmd=cli.schedule.tick_command(), synced=True))
 
     code = run(["track", "https://example.slack.com/archives/C0PAY/p1699000001000100",
                 "--title", "支付超时", "--project", "pay"])
     assert code == 0
     out = capsys.readouterr().out
     assert "tracked 支付超时 as `pay`" in out
-    assert installed["cmd"].endswith("canopy_main.py tick")
+    assert installed["synced"] and installed["cmd"].endswith("canopy_main.py tick")
     # The absolute runner path is what cron will actually be able to exec.
     assert config_mod.load(cli_env["dh"])["runner_path"] == "/abs/codex"
 
@@ -94,8 +94,12 @@ def test_tree_depth_zero_collapses(cli_env, capsys):
     assert "慢查询定位" not in capsys.readouterr().out
 
 
-def test_untrack_then_track_again(cli_env, capsys):
+def test_untrack_then_track_again(cli_env, capsys, monkeypatch):
     """`untrack` is a toggle, not a tombstone — `track <ref>` puts it back."""
+    seen = []
+    monkeypatch.setattr(cli.schedule, "sync",
+                        lambda dh, cfg, **kw: seen.append(
+                            cli.schedule.has_active(dh)) or cli.schedule.UNCHANGED)
     track_one(cli_env)
     root = cli._ctx(None).tree("pay").root
 
@@ -104,6 +108,9 @@ def test_untrack_then_track_again(cli_env, capsys):
 
     run(["track", "pay"])
     assert cli._ctx(None).tree("pay").node(root)["status"] == "active"
+    # The cron entry is kept in step by the same commands: nothing watched
+    # after untrack, something watched again after track.
+    assert seen[-2:] == [False, True]
 
 
 def test_ambiguous_ref_refuses_and_lists_candidates(cli_env, capsys):

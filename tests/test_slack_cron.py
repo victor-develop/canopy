@@ -177,3 +177,45 @@ def test_a_patched_slackcli_keeps_labels_on_edit():
 def test_from_config_reads_the_escaping_flag():
     assert Slack.from_config({}).escapes_on_edit is True
     assert Slack.from_config({"slack_cli_escapes_on_edit": False}).escapes_on_edit is False
+
+
+# -- the cron entry follows whether anything is watched ------------------------
+
+def make_tree(dh, proj_id, status="active"):
+    tree = store.Tree.new(proj_id, "C1-1.0", "支付超时", "A君")
+    tree.nodes["C1-1.0"]["status"] = status
+    tree.save(dh)
+    return tree
+
+
+def test_sync_installs_when_something_is_watched(dh):
+    from canopy import schedule
+    make_tree(dh, "pay")
+    run, calls = recorder([(1, ""), (0, "")])      # empty crontab, then the write
+    assert schedule.sync(dh, {}, run=run) == schedule.INSTALLED
+    assert "# canopy" in calls[-1][1]
+
+
+def test_sync_removes_the_entry_when_the_last_node_is_untracked(dh):
+    """`untrack` should not leave a cron waking every 5 minutes for nothing."""
+    from canopy import schedule
+    make_tree(dh, "pay", status="untracked")
+    existing = "*/5 * * * * tick # canopy\n"
+    run, calls = recorder([(0, existing), (0, existing), (0, "")])
+    assert schedule.sync(dh, {}, run=run) == schedule.REMOVED
+    assert calls[-1][1].strip() == ""
+
+
+def test_sync_is_a_no_op_when_already_correct(dh):
+    from canopy import schedule
+    make_tree(dh, "pay")
+    run, _ = recorder([(0, "*/5 * * * * tick # canopy\n")])
+    assert schedule.sync(dh, {}, run=run) == schedule.UNCHANGED
+
+
+def test_one_parked_tree_does_not_stop_the_others(dh):
+    from canopy import schedule
+    make_tree(dh, "pay", status="untracked")
+    make_tree(dh, "edd", status="active")
+    run, _ = recorder([(0, "*/5 * * * * tick # canopy\n")])
+    assert schedule.sync(dh, {}, run=run) == schedule.UNCHANGED

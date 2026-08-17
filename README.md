@@ -191,6 +191,7 @@ $ /canopy tree 1.a --depth 1         从哪儿开始、往下几层,是两个独
 
 $ /canopy untrack 1.b                不盯了,feed 留着,树上标 ×
 $ /canopy track 1.b                  重新盯上
+                                     最后一个活跃节点被 untrack 时,cron 自己撤掉
 $ /canopy map                        重刷树消息,打印链接
 ```
 

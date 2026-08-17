@@ -35,6 +35,7 @@ profile having run.
 | `prompts.py` | what a worker is actually told |
 | `mentions.py` | reading `@agent <cmd>` out of a Slack message |
 | `cron.py` | one crontab line, installed and removed cleanly |
+| `schedule.py` | the invariant: that line exists exactly when a node is active |
 | `config.py`, `paths.py`, `errors.py` | config defaults, data-home layout, error types |
 
 ## Two things worth knowing before changing this
