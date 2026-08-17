@@ -69,7 +69,7 @@ def test_a_row_carries_the_alias_the_digest_and_the_thread(repo):
                                permalink=lambda ch, ts: "https://x/feed")
     row = [l for l in body.splitlines() if "慢查询" in l][0]
     assert row.startswith("    ◦ `1.a` 慢查询")
-    assert "[<https://x/feed|智能总结>] [<https://x/p1|全文>]" in row
+    assert "[<https://x/feed|智能摘要>] [<https://x/p1|全文>]" in row
     # Owner, counts and lock state are deliberately absent: this message is only
     # re-rendered when the tree changes shape, so live fields would go stale.
     assert "E君" not in row

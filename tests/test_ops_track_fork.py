@@ -34,7 +34,7 @@ def test_track_creates_tree_state_feed_and_announce(ctx, slack, tracked):
     # One line, two links: the trace tree and the digest. Anything longer gets
     # skimmed past in a thread people are already arguing in.
     assert announce["text"].startswith("[canopy]:")
-    assert "|跟踪>" in announce["text"] and "|智能总结>" in announce["text"]
+    assert "|跟踪>" in announce["text"] and "|智能摘要>" in announce["text"]
 
 
 def test_track_seeds_profiles_and_messages(ctx, tracked):
@@ -89,7 +89,7 @@ def test_tree_message_marks_status_and_links(ctx, slack, tracked):
     map_ts = tree.data["tree_msgs"][0]["ts"]
     text = slack.text_of(map_ts)
     assert "× `1.a` 慢查询定位" in text
-    assert "|智能总结>" in text and "|全文>" in text
+    assert "|智能摘要>" in text and "|全文>" in text
 
 
 def test_status_change_posts_into_the_feed_thread(ctx, slack, tracked):
@@ -195,9 +195,9 @@ def test_the_child_thread_gets_a_link_to_its_own_feed(ctx, slack, tracked):
     result = ops.fork(ctx, tracked["proj_id"], tracked["node_id"], "慢查询定位")
     kickoff = slack.text_of(result["thread_ts"])
     feed_url = ctx.permalink("C0PAY", result["feed_ts"])
-    assert "|智能总结>" in kickoff and feed_url in kickoff
+    assert "|智能摘要>" in kickoff and feed_url in kickoff
     # And it still points up and out — every canopy message uses the same
-    # skeleton: 正在[跟踪]对话并进行 [智能总结].
+    # skeleton: 正在[跟踪]对话并进行 [智能摘要].
     assert "|上游>" in kickoff and "|跟踪>" in kickoff
 
 
@@ -212,8 +212,8 @@ def test_the_kickoff_is_readable_before_the_feed_exists(ctx, slack, tracked):
     slack.post = capture
     ops.fork(ctx, tracked["proj_id"], tracked["node_id"], "慢查询定位")
     kickoff_as_posted = posted[0]
-    # Empty link degrades to its label rather than posting `<|智能总结>`.
-    assert "智能总结" in kickoff_as_posted and "<|" not in kickoff_as_posted
+    # Empty link degrades to its label rather than posting `<|智能摘要>`.
+    assert "智能摘要" in kickoff_as_posted and "<|" not in kickoff_as_posted
 
 
 def test_the_child_thread_says_what_it_is_about(ctx, slack, tracked):
