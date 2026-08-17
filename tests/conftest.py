@@ -83,6 +83,20 @@ def no_real_runner(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_real_subprocess(monkeypatch):
+    """No test may leave a process behind.
+
+    `track` starts the ops viewer, and a dozen tests call `track`. Unstubbed,
+    each pytest run scattered detached HTTP servers across the machine — 59 of
+    them survived one afternoon before anyone noticed. Guard it the same way as
+    the runner: fail loudly rather than fork.
+    """
+    def refuse(argv, dh):
+        raise AssertionError("a test tried to spawn a real process: %r" % (argv,))
+    monkeypatch.setattr("canopy.webserve._spawn", refuse)
+
+
+@pytest.fixture(autouse=True)
 def fake_crontab(monkeypatch):
     """Never touch the developer's real crontab.
 

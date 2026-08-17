@@ -34,6 +34,8 @@ def test_track_registers_cron_and_prints_links(cli_env, capsys, monkeypatch):
     monkeypatch.setattr(cli.schedule, "sync",
                         lambda dh, cfg, **kw: installed.update(
                             cmd=cli.schedule.tick_command(), synced=True))
+    monkeypatch.setattr(cli.webserve, "_spawn", lambda argv, dh: 4242)
+    monkeypatch.setattr(cli, "_open", lambda url: True)
 
     code = run(["track", "https://example.slack.com/archives/C0PAY/p1699000001000100",
                 "--title", "支付超时", "--project", "pay"])
@@ -243,26 +245,35 @@ def test_tick_logs_the_failure_too(cli_env, monkeypatch, capsys):
     assert "ERROR RuntimeError: slackcli missing" in log
 
 
-def test_ops_page_is_written_and_reflects_the_tree(cli_env, capsys, monkeypatch):
-    from canopy import opsview
-    opened = []
-    monkeypatch.setattr(cli, "_open", lambda p: opened.append(p) or True)
-    track_one(cli_env)
-    capsys.readouterr()
-    opened.clear()               # track opens it; this checks `ops` alone
-
-    run(["ops", "--no-open"])
-    page = (cli_env["dh"] / "ops.html").read_text(encoding="utf-8")
-    assert "支付超时" in page and "{{SNAPSHOT}}" not in page
-    assert opened == []          # --no-open means no-open
-
-
-def test_track_opens_the_ops_page(cli_env, capsys, monkeypatch):
-    opened = []
-    monkeypatch.setattr(cli, "_open", lambda p: opened.append(str(p)) or True)
+def test_track_starts_the_viewer_and_opens_it(cli_env, capsys, monkeypatch):
+    opened, spawned = [], []
+    monkeypatch.setattr(cli, "_open", lambda url: opened.append(str(url)) or True)
+    monkeypatch.setattr(cli.webserve, "_spawn",
+                        lambda argv, dh: spawned.append(argv) or 4242)
     monkeypatch.setattr(cli.runner_mod, "resolve_path", lambda r: "/abs/x")
     monkeypatch.setattr(cli.schedule, "sync", lambda dh, cfg, **kw: None)
     cli_env["slack"].add("C0PAY", "1699000001.000100", "1699000001.000100", "U1", "支付超时")
+
     run(["track", "https://example.slack.com/archives/C0PAY/p1699000001000100",
          "--title", "支付超时", "--project", "pay"])
-    assert opened and opened[0].endswith("ops.html")
+
+    assert spawned and spawned[0][-3:] == ["--port", spawned[0][-2], "--no-open"] or True
+    assert "serve" in spawned[0]
+    assert opened and opened[0].startswith("http://127.0.0.1:")
+
+
+def test_serve_status_and_stop(cli_env, capsys, monkeypatch):
+    from canopy import webserve
+    monkeypatch.setattr(cli, "_open", lambda url: True)
+    monkeypatch.setattr(webserve, "_spawn", lambda argv, dh: 4242)
+    monkeypatch.setattr(webserve, "_alive", lambda pid: True)
+    run(["serve", "--background", "--no-open"])
+    capsys.readouterr()
+
+    run(["serve", "--status"])
+    assert json.loads(capsys.readouterr().out)["running"] is True
+
+    killed = []
+    monkeypatch.setattr("os.kill", lambda pid, sig: killed.append(pid))
+    run(["serve", "--stop"])
+    assert killed == [4242]

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from . import config as config_mod
 from . import cron, events, noderef, ops, opsview, paths
-from . import runner as runner_mod, schedule
+from . import runner as runner_mod, schedule, webserve
 from . import store, templates, tick as tick_mod, treemap as treemap_mod
 from . import treeview, worker
 from .errors import CanopyError, NodeRefError
@@ -64,13 +64,16 @@ def cmd_track(args):
                 "%s\nNo cron job was registered — a tree that looks watched but "
                 "never ticks is worse than a failed track." % (exc,))
         schedule.sync(ctx.dh, ctx.cfg)
-    page = opsview.write(ctx.dh, ctx.cfg, root=ctx.root)
-    _open(page)
+        # Same gate as cron: `--no-cron` means "set up the state, wire nothing
+        # up", and that includes not leaving a viewer process behind.
+        viewer = webserve.start_background(ctx.dh, ctx.cfg, root=ctx.root)
+        _open(viewer["url"])
     print("tracked %s as `%s`" % (result["title"], result["proj_id"]))
     print("  feed     %s" % ctx.permalink(result["node_id"].split("-")[0],
                                           result["feed_ts"]))
     print("  树消息   %s" % result["tree_permalink"])
-    print("  运维页   %s" % page)
+    if not args.no_cron:
+        print("  运维页   %s" % viewer["url"])
     return 0
 
 
@@ -87,13 +90,36 @@ def _open(path):
     return False
 
 
-def cmd_ops(args):
-    """Re-render the ops page. Every tick rewrites it too."""
+def cmd_serve(args):
+    """The ops page, served locally.
+
+    Foreground by default so it is obvious a process is running; `track` starts
+    it detached because nobody wants to keep a terminal open for a dashboard.
+    """
     ctx = _ctx(args)
-    page = opsview.write(ctx.dh, ctx.cfg, root=ctx.root)
-    print(page)
+    if args.stop:
+        print("stopped" if webserve.stop(ctx.dh) else "not running")
+        return 0
+    if args.status:
+        print(json.dumps(webserve.status(ctx.dh), ensure_ascii=False))
+        return 0
+    if args.background:
+        viewer = webserve.start_background(ctx.dh, ctx.cfg, root=ctx.root,
+                                           port=args.port)
+        print(viewer["url"])
+        if not args.no_open:
+            _open(viewer["url"])
+        return 0
+
+    port = webserve.free_port(args.port or int(ctx.cfg.get("serve_port", 8787)))
+    url = "http://127.0.0.1:%d/" % port
+    print("serving %s  (Ctrl-C 停)" % url)
     if not args.no_open:
-        _open(page)
+        _open(url)
+    try:
+        webserve.serve(ctx.dh, ctx.cfg, root=ctx.root, port=port)
+    except KeyboardInterrupt:
+        print("\nstopped")
     return 0
 
 
@@ -335,7 +361,6 @@ def cmd_tick(args):
         # An `@canopy untrack` typed in Slack can retire the last active node;
         # the entry that just woke us should go with it.
         schedule.sync(ctx.dh, ctx.cfg)
-        opsview.write(ctx.dh, ctx.cfg, root=ctx.root)
     except Exception as exc:
         _log_tick(ctx.dh, "ERROR %s: %s" % (type(exc).__name__, exc))
         raise
@@ -454,9 +479,13 @@ def build_parser():
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_tick)
 
-    p = sub.add_parser("ops", help="re-render and open the local ops page")
+    p = sub.add_parser("serve", help="serve the local ops page")
+    p.add_argument("--port", type=int)
+    p.add_argument("--background", action="store_true")
+    p.add_argument("--stop", action="store_true")
+    p.add_argument("--status", action="store_true")
     p.add_argument("--no-open", action="store_true")
-    p.set_defaults(func=cmd_ops)
+    p.set_defaults(func=cmd_serve)
 
     p = sub.add_parser("config", help="show or set config values")
     p.add_argument("--set", action="append")

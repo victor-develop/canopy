@@ -1,12 +1,11 @@
-"""The ops page: what canopy is running, and how long since it last ran.
+"""What the ops page shows, as plain data plus a render of it.
 
-Deliberately a **static file**, rewritten by every tick. A served page would need
-a process, and "no daemon" is the one rule this design does not bend. Elapsed
-times are computed in the browser from embedded timestamps, so the page stays
-useful between ticks: the "last tick 3m ago" counter keeps climbing on its own,
-and turns red once the tick is overdue. That is the failure this page exists for
-— a cron entry that fires and crashes every time reports nothing, and nobody
-notices for half an hour.
+Served by `canopy serve` (see webserve.py). The snapshot is rebuilt per request,
+so the page is live; elapsed times are still computed in the *browser* from the
+embedded timestamps, which is what keeps it honest when the thing being watched
+has stopped: a cron entry that fires and crashes every time produces no new
+data, and a counter that only moves when data arrives would look calm. Here it
+keeps climbing and goes red.
 """
 
 import json
@@ -15,7 +14,6 @@ from pathlib import Path
 
 from . import cron, events, locks, noderef, paths, schedule, store
 
-FILE = "ops.html"
 TEMPLATE = "ops.html"
 
 
@@ -119,9 +117,4 @@ def render(data, root=None):
         "{{SNAPSHOT}}", json.dumps(data, ensure_ascii=False, sort_keys=True))
 
 
-def write(dh, cfg, root=None, now=None, alive=None, run=None):
-    """-> the path of the page. Called by every tick, and by `canopy ops`."""
-    data = snapshot(dh, cfg, now=now, alive=alive, run=run)
-    out = Path(dh) / FILE
-    out.write_text(render(data, root=root), encoding="utf-8")
-    return out
+

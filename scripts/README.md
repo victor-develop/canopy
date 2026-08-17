@@ -35,6 +35,9 @@ profile having run.
 | `prompts.py` | what a worker is actually told |
 | `mentions.py` | reading `@agent <cmd>` out of a Slack message |
 | `cron.py` | one crontab line, installed and removed cleanly |
+| `webserve.py` | the ops page server: loopback, read-only, exits when idle |
+| `opsview.py` | what that page shows, as data |
+| `events.py` | append-only log of ticks and workers |
 | `schedule.py` | the invariant: that line exists exactly when a node is active |
 | `config.py`, `paths.py`, `errors.py` | config defaults, data-home layout, error types |
 

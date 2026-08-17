@@ -3,8 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- Re-read from disk periodically: the tick rewrites this file in place. -->
-<meta http-equiv="refresh" content="30">
+<!-- Served by `canopy serve`: the page polls for fresh data below. -->
 <title>canopy 运维</title>
 <style>
   :root{
@@ -95,7 +94,7 @@
 </div>
 
 <script>
-const D = {{SNAPSHOT}};
+let D = {{SNAPSHOT}};
 
 // The page is a snapshot on disk; the clock is the browser's. That is the whole
 // trick: even when nothing rewrites this file, "距上次 tick" keeps climbing and
@@ -182,7 +181,22 @@ function paint(){
   el("paths").textContent = `${D.data_home} · runner ${D.runner_path || D.runner} · slackcli ${D.slack_cli || "—"}`;
 }
 paint();
-setInterval(paint, 1000);   // the elapsed counters, not the data
+setInterval(paint, 1000);          // elapsed counters tick locally
+
+// Fresh data from the server. If this page was opened straight off disk the
+// fetch just fails and the embedded snapshot stays — the counters still climb,
+// which is the part that matters when the tick has stopped.
+async function refresh(){
+  try{
+    const r = await fetch("/api/snapshot", {cache:"no-store"});
+    if(!r.ok) return;
+    D = await r.json();
+    paint();
+    el("stamp").textContent = "实时 · " + new Date(D.now*1000).toLocaleTimeString();
+  }catch(e){ /* file:// or server stopped: keep showing what we have */ }
+}
+refresh();
+setInterval(refresh, 5000);
 </script>
 </body>
 </html>

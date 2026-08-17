@@ -80,5 +80,117 @@ def test_render_inlines_the_snapshot(dh, repo):
                           root=repo)
     assert "{{SNAPSHOT}}" not in html
     assert "支付超时" in html
-    # No server, no fetch: the data is in the page.
-    assert "fetch(" not in html
+    # The first paint needs no round trip: the snapshot ships inside the page,
+    # so a stopped server degrades to "last known state, counters still moving".
+    assert "let D = {" in html
+
+
+# -- served, not written to disk ----------------------------------------------
+
+def test_the_server_answers_html_and_json(dh, repo):
+    """A real server on a real loopback port — the page has no other source."""
+    import urllib.request
+    from canopy import webserve
+
+    tree = store.Tree.new("pay", "C1-1.0", "支付超时", "A君")
+    tree.save(dh)
+    httpd, base = webserve.serve_in_thread(dh, {"cron_interval_minutes": 5},
+                                           root=repo, port=0)
+    try:
+        html = urllib.request.urlopen(base + "/").read().decode("utf-8")
+        assert "支付超时" in html and "{{SNAPSHOT}}" not in html
+
+        data = json.loads(urllib.request.urlopen(base + "/api/snapshot").read())
+        assert data["trees"][0]["project"] == "pay"
+
+        try:
+            urllib.request.urlopen(base + "/etc/passwd")
+            raise AssertionError("should 404")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 404
+    finally:
+        httpd.shutdown()
+
+
+def test_the_snapshot_is_rebuilt_per_request(dh, repo):
+    """No file to go stale: track something and the next request shows it."""
+    import urllib.request
+    from canopy import webserve
+
+    httpd, base = webserve.serve_in_thread(dh, {}, root=repo, port=0)
+    try:
+        first = json.loads(urllib.request.urlopen(base + "/api/snapshot").read())
+        assert first["trees"] == []
+
+        store.Tree.new("edd", "C1-9.0", "EDD 不准", "A君").save(dh)
+        second = json.loads(urllib.request.urlopen(base + "/api/snapshot").read())
+        assert second["trees"][0]["project"] == "edd"
+    finally:
+        httpd.shutdown()
+
+
+def test_it_binds_loopback_only(dh, repo):
+    """The snapshot carries channel names and local paths — not LAN material."""
+    from canopy import webserve
+    httpd, _ = webserve.serve_in_thread(dh, {}, root=repo, port=0)
+    try:
+        assert httpd.server_address[0] == "127.0.0.1"
+    finally:
+        httpd.shutdown()
+
+
+def test_start_background_reuses_a_live_viewer(dh, monkeypatch):
+    from canopy import webserve
+    spawned = []
+    monkeypatch.setattr(webserve, "_spawn", lambda argv, dh: spawned.append(argv) or 99)
+    monkeypatch.setattr(webserve, "_alive", lambda pid: True)
+
+    monkeypatch.setattr(webserve, "_responds", lambda port: True)
+    first = webserve.start_background(dh, {})
+    second = webserve.start_background(dh, {})
+    assert len(spawned) == 1                      # one viewer, not one per track
+    assert second["port"] == first["port"]
+
+
+def test_a_dead_viewer_is_replaced(dh, monkeypatch):
+    from canopy import webserve
+    spawned = []
+    monkeypatch.setattr(webserve, "_spawn", lambda argv, dh: spawned.append(argv) or 99)
+    monkeypatch.setattr(webserve, "_alive", lambda pid: False)
+    monkeypatch.setattr(webserve, "_responds", lambda port: False)
+    webserve.start_background(dh, {})
+    webserve.start_background(dh, {})
+    assert len(spawned) == 2
+
+
+def test_the_viewer_exits_when_nobody_is_looking(dh, repo):
+    """A viewer that outlives the person who opened it is a process leak."""
+    import threading
+    import time as _t
+    from canopy import webserve
+
+    seen = {"at": _t.time() - 3600}          # last request an hour ago
+    httpd = webserve.make_server(dh, {}, root=repo, port=0, seen=seen)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    webserve._idle_watchdog(httpd, seen, timeout=1)
+
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+
+
+def test_a_request_keeps_it_alive(dh, repo):
+    import threading
+    import time as _t
+    import urllib.request
+    from canopy import webserve
+
+    seen = {"at": _t.time()}
+    httpd = webserve.make_server(dh, {}, root=repo, port=0, seen=seen)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        urllib.request.urlopen("http://127.0.0.1:%d/api/snapshot" % httpd.server_port).read()
+        assert _t.time() - seen["at"] < 1     # the request refreshed the clock
+    finally:
+        httpd.shutdown()

@@ -154,6 +154,34 @@ The fork also carries the security hardening from `asdigitos/slackcli#1`
 (credential-bearing requests gated to slack.com hosts, terminal output
 sanitized, update downloads checksum-verified).
 
+## The ops page — the one process that is allowed to linger
+
+`canopy serve` runs a loopback HTTP server that renders what canopy is doing:
+time since the last tick, which nodes hold a lock right now (pid, how long,
+which runner), what the recent workers cost, per-node state, recent failures.
+`track` starts it in the background and opens it; `serve --stop` kills it.
+
+This is the only long-lived process in the design, so it is fenced in:
+
+- **It only reads disk and renders.** No Slack calls, no runner, no writes. Kill
+  it and nothing is lost.
+- **Loopback only.** The snapshot carries channel names, thread titles and local
+  paths.
+- **It exits when nobody is looking** (`serve_idle_timeout`, default 30 min). A
+  viewer that outlives the person who opened it is a process leak with a port.
+- **One per data home.** `start_background` reuses a viewer that answers, and
+  clears a stale record instead of stacking another process on top.
+
+Elapsed times are computed in the **browser** from the snapshot's timestamps,
+not at render time. That is what keeps the page honest when the thing being
+watched has stopped: a cron entry that fires and crashes produces no new data,
+and a counter that only moves when data arrives would look calm. Here it keeps
+climbing and goes red past two intervals.
+
+`events.jsonl` feeds it: one line per tick and per worker with node, mode,
+duration and outcome. `tick.log` answers "did it run"; this answers "on what,
+and how long did it take".
+
 ## Code / data separation — never write into the skill
 
 The skill is a git repo that gets installed by many people and PR'd back.
