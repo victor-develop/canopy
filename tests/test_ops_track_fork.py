@@ -214,3 +214,10 @@ def test_the_kickoff_is_readable_before_the_feed_exists(ctx, slack, tracked):
     kickoff_as_posted = posted[0]
     # Empty link degrades to its label rather than posting `<|智能总结>`.
     assert "智能总结" in kickoff_as_posted and "<|" not in kickoff_as_posted
+
+
+def test_the_child_thread_says_what_it_is_about(ctx, slack, tracked):
+    """Someone landing in the child thread should not have to go back up to
+    learn what it is for."""
+    result = ops.fork(ctx, tracked["proj_id"], tracked["node_id"], "慢查询定位")
+    assert "慢查询定位" in slack.text_of(result["thread_ts"])
