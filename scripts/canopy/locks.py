@@ -32,38 +32,50 @@ def read(node_dir):
 
 
 def _alive(pid):
+    """Does this pid exist? EPERM means it does — it just isn't ours."""
     if not pid:
         return False
     try:
         os.kill(int(pid), 0)
-    except OSError:
+    except ProcessLookupError:
         return False
-    except (TypeError, ValueError):
+    except PermissionError:
+        return True
+    except (OSError, TypeError, ValueError):
         return False
     return True
 
 
-def is_held(node_dir, now=None, stale_after=1800, alive=None):
+MAX_AGE = 6 * 3600
+
+
+def is_held(node_dir, now=None, stale_after=1800, alive=None, max_age=MAX_AGE):
     info = read(node_dir)
     if info is None:
         return False
     now = time.time() if now is None else now
+    age = now - float(info.get("started") or 0)
     pid = info.get("pid")
     if pid:
-        # A live process holds its lock however long it takes. `recalibrate`
-        # can legitimately run for hours (chunked history × runner timeout);
-        # breaking its lock on a 30-minute staleness rule put a second worker
-        # into the same node, both rewriting the same feed.
-        return (alive or _alive)(pid)
-    # No readable pid: fall back to the staleness window rather than breaking
-    # it outright. Two workers in one thread is worse than one node waiting.
-    return now - float(info.get("started") or 0) <= stale_after
+        # A live process holds its lock as long as it needs — `recalibrate` can
+        # legitimately run for hours, and breaking its lock on a 30-minute rule
+        # put a second worker into the same node.
+        #
+        # But not forever: pids get recycled (macOS wraps at 99999), so a lock
+        # left behind by a SIGKILLed worker eventually names an unrelated live
+        # process, and without an upper bound that node was never watched again.
+        return (alive or _alive)(pid) and age <= max_age
+    # No readable pid: fall back to the staleness window rather than breaking it
+    # outright. Two workers in one thread is worse than one node waiting.
+    return age <= stale_after
 
 
-def acquire(node_dir, pid=None, now=None, stale_after=1800, alive=None):
+def acquire(node_dir, pid=None, now=None, stale_after=1800, alive=None,
+            max_age=MAX_AGE):
     node_dir = Path(node_dir)
     node_dir.mkdir(parents=True, exist_ok=True)
-    if is_held(node_dir, now=now, stale_after=stale_after, alive=alive):
+    if is_held(node_dir, now=now, stale_after=stale_after, alive=alive,
+               max_age=max_age):
         raise LockedError("node is locked: %s" % (node_dir,))
     now = time.time() if now is None else now
     payload = {"pid": pid if pid is not None else os.getpid(), "started": now}

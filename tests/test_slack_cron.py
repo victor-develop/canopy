@@ -234,7 +234,10 @@ def test_the_effects_door_refuses_anything_it_was_not_taught(no_machine_effects)
     import pytest as _pytest
     from canopy import effects as effects_mod
 
-    with _pytest.raises(AssertionError):
+    # EffectEscaped derives from BaseException so application code — which
+    # catches Exception to keep a tick alive — cannot swallow the alarm.
+    assert not issubclass(effects_mod.EffectEscaped, Exception)
+    with _pytest.raises(effects_mod.EffectEscaped):
         no_machine_effects.spawn(["some-new-daemon"])
     assert effects_mod.DEFAULT is no_machine_effects       # nothing bypasses it
 

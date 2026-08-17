@@ -26,6 +26,9 @@ HOST = "127.0.0.1"
 # A viewer nobody is looking at is just a process leak with a port. Exit rather
 # than outlive the person who opened it.
 IDLE_TIMEOUT = 1800
+# Threads are unbounded by default; any local process could open connections
+# until the machine complains. Eight is plenty for one person's browser.
+MAX_CONCURRENCY = 8
 
 
 def state_path(dh):
@@ -82,7 +85,7 @@ def free_port(preferred=DEFAULT_PORT):
     raise OSError("no port available")
 
 
-def make_handler(dh, cfg, root=None, seen=None, run=None):
+def make_handler(dh, cfg, root=None, seen=None, run=None, slots=None):
     class Handler(BaseHTTPRequestHandler):
         # A socket that connects and then says nothing blocks `readline`
         # forever. On a single-threaded server that wedges every later request
@@ -100,6 +103,16 @@ def make_handler(dh, cfg, root=None, seen=None, run=None):
             self.wfile.write(payload)
 
         def do_GET(self):  # noqa: N802 - http.server's interface
+            if slots is not None and not slots.acquire(blocking=False):
+                self._send(503, "busy", "text/plain; charset=utf-8")
+                return
+            try:
+                self._handle()
+            finally:
+                if slots is not None:
+                    slots.release()
+
+        def _handle(self):
             if seen is not None:
                 seen["at"] = time.time()
             path = self.path.split("?")[0]
@@ -126,7 +139,9 @@ def make_server(dh, cfg, root=None, port=None, seen=None, run=None):
     # only read disk. Cache it.
     server = ThreadingHTTPServer((HOST, port),
                                  make_handler(dh, cfg, root=root, seen=seen,
-                                              run=run or _cached_crontab()))
+                                              run=run or _cached_crontab(),
+                                              slots=threading.BoundedSemaphore(
+                                                  MAX_CONCURRENCY)))
     server.daemon_threads = True
     return server
 
@@ -214,7 +229,6 @@ def start_background(dh, cfg, root=None, port=None, spawn=None, effects=None):
         # top without clearing it first.
         stop(dh)
 
-    import subprocess
     import sys
     from pathlib import Path
 

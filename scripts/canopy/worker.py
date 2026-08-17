@@ -52,10 +52,32 @@ def classify(messages, agents):
 
 
 def _execute(ctx, proj_id, nid, messages, plan, out_file=None, run=None):
-    """Commands first, in order; then one reply if somebody also asked something."""
+    """Commands first, in order; then one reply if somebody also asked something.
+
+    Two rules here, both learned from failures:
+
+    - **Each command is recorded as done the moment it succeeds.** The batch is
+      retried when anything in it fails, and a `fork` is not idempotent: without
+      this, one `fork` plus one bad `ack return` in the same batch grew a
+      duplicate child (and three Slack messages) every five minutes forever.
+    - **Each command is tried on its own.** One failure used to skip every
+      command after it in the batch, silently.
+    """
     results = []
     for detail in plan["commands"]:
-        results.append(run_command(ctx, proj_id, nid, detail, out_file=out_file))
+        if _already_done(ctx, proj_id, nid, detail):
+            results.append({"command": detail["command"], "skipped": "already done"})
+            continue
+        try:
+            outcome = run_command(ctx, proj_id, nid, detail, out_file=out_file)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as exc:
+            results.append({"command": detail["command"],
+                            "error": "%s: %s" % (type(exc).__name__, exc)})
+            continue
+        _mark_done(ctx, proj_id, nid, detail)
+        results.append(outcome)
     if plan["question"]:
         results.append(run_full(ctx, proj_id, nid, messages,
                                 plan["question"]["agent"], out_file=out_file,
@@ -65,6 +87,27 @@ def _execute(ctx, proj_id, nid, messages, plan, out_file=None, run=None):
     if len(results) == 1:
         return dict(results[0], kind=plan["kind"])
     return {"kind": plan["kind"], "steps": results}
+
+
+DONE_KEEP = 50
+
+
+def _command_key(detail):
+    return "%s:%s" % ((detail.get("message") or {}).get("ts"), detail["command"])
+
+
+def _already_done(ctx, proj_id, nid, detail):
+    state = store.load_state(ctx.dh, proj_id, nid)
+    return _command_key(detail) in (state.get("commands_done") or [])
+
+
+def _mark_done(ctx, proj_id, nid, detail):
+    # Re-read: the command itself (a fork) rewrote this file.
+    state = store.load_state(ctx.dh, proj_id, nid)
+    done = list(state.get("commands_done") or [])
+    done.append(_command_key(detail))
+    state["commands_done"] = done[-DONE_KEEP:]
+    store.save_state(ctx.dh, proj_id, state)
 
 
 def run_command(ctx, proj_id, nid, detail, out_file=None):
@@ -77,9 +120,10 @@ def run_command(ctx, proj_id, nid, detail, out_file=None):
     if cmd == "fork":
         if not arg:
             # Say so in the thread: a silent no-op leaves the person who typed
-            # it believing a child thread exists somewhere.
-            ops.reply(ctx, proj_id, nid,
-                      "`fork` 需要一个标题:`@%s fork <标题>`" % agent, agent=agent)
+            # it believing a child thread exists somewhere. Through a template,
+            # like every other byte Canopy posts — a hardcoded Chinese string
+            # would land in an `en` tree.
+            ops.post_notice(ctx, proj_id, nid, "fork-needs-title.md", agent=agent)
             return {"command": cmd, "skipped": "fork needs a title"}
         return dict(ops.fork(ctx, proj_id, nid, arg, agent=agent), command=cmd)
     if cmd == "guide":
@@ -114,7 +158,8 @@ def run_full(ctx, proj_id, nid, messages, agent, out_file=None, run=None):
         guide_text=prompts.read_guide(node_dir),
         agent=agent,
     )
-    answer = (run or runner_mod.run)(ctx.cfg, prompt, node_dir, out_file=out_file)
+    answer = (run or runner_mod.run)(ctx.cfg, prompt, node_dir, out_file=out_file,
+                                     effects=ctx.effects)
     answer = (answer or "").strip()
     if not answer or answer == SKIP:
         return {"kind": "full", "posted": False}
@@ -137,7 +182,8 @@ def run_light(ctx, proj_id, nid, messages, out_file=None, run=None):
         recent_entries=recent,
     )
     answer = ((run or runner_mod.run)(ctx.cfg, prompt, node_dir,
-                                      out_file=out_file) or "").strip()
+                                      out_file=out_file,
+                                      effects=ctx.effects) or "").strip()
     answer = _last_line(answer)
     if not answer or answer == SKIP:
         return {"kind": "light", "appended": False}
@@ -179,7 +225,8 @@ def recalibrate(ctx, proj_id, nid, chunk_size=80, out_file=None, run=None):
                                             previous_notes=notes,
                                             guide_text=guide)
         answer = ((run or runner_mod.run)(ctx.cfg, prompt, node_dir,
-                                          out_file=out_file) or "").strip()
+                                          out_file=out_file,
+                                          effects=ctx.effects) or "").strip()
         if not answer or answer == SKIP:
             continue
         notes.extend([l.strip() for l in answer.splitlines() if l.strip()])
@@ -201,9 +248,14 @@ def handle(ctx, proj_id, nid, messages, agents=None, out_file=None, run=None):
     try:
         return _execute(ctx, proj_id, nid, messages, plan, out_file=out_file,
                         run=run)
+    except (KeyboardInterrupt, SystemExit):
+        # Ctrl-C is not a node-level failure. (The test guard rail raises an
+        # EffectEscaped derived from BaseException, so it never lands here at
+        # all — that is the point of it.)
+        raise
     except Exception as exc:
-        # Anything, not just CanopyError. `ack return` with no draft raises a
-        # plain ValueError; letting that escape killed the whole tick, left the
-        # cursor unmoved, and replayed the same message every five minutes
-        # forever — while every project after this one stopped being watched.
+        # Anything else. `ack return` with no draft raises a plain ValueError;
+        # letting that escape killed the whole tick, left the cursor unmoved, and
+        # replayed the same message every five minutes forever — while every
+        # project after this one stopped being watched.
         return {"kind": plan["kind"], "error": "%s: %s" % (type(exc).__name__, exc)}

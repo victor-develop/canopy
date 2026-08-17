@@ -43,7 +43,7 @@ def test_chatter_goes_to_the_light_summarizer(ctx, slack, tracked):
     add_msg(slack, state, "1700001000.000100", "U2", "我觉得是索引问题")
     calls = []
 
-    def fake_run(cfg, prompt, node_dir, out_file=None):
+    def fake_run(cfg, prompt, node_dir, out_file=None, **kw):
         calls.append(prompt)
         return "决定先加复合索引"
 
@@ -69,7 +69,7 @@ def test_mention_wakes_a_full_worker_and_posts_its_reply(ctx, slack, tracked):
     add_msg(slack, state, "1700001000.000100", "U2", "@canopy 这个能今天出结论吗")
     prompts = []
 
-    def fake_run(cfg, prompt, node_dir, out_file=None):
+    def fake_run(cfg, prompt, node_dir, out_file=None, **kw):
         prompts.append(prompt)
         return "今天出不了,缺 DBA 的确认。"
 
@@ -190,7 +190,7 @@ def test_a_real_message_after_canopys_own_still_gets_handled(ctx, slack, tracked
     add_msg(slack, state, "1700001001.000100", "U2", "那就先加索引")
     seen = {}
 
-    def fake_run(cfg, prompt, node_dir, out_file=None):
+    def fake_run(cfg, prompt, node_dir, out_file=None, **kw):
         seen["prompt"] = prompt
         return "决定先加索引"
 
@@ -238,3 +238,55 @@ def test_a_failing_batch_is_retried_then_skipped(ctx, slack, tracked):
 
     tick_mod.tick(ctx, run=no_llm)
     assert state_of(ctx, tracked)["cursor"] == "1700001000.000100"   # gave up
+
+
+def test_a_command_is_not_re_executed_when_the_batch_retries(ctx, slack, tracked):
+    """`fork` is not idempotent. One fork plus one bad command in the same batch
+    used to grow a duplicate child — and three Slack messages — every tick."""
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "@canopy fork 慢查询定位")
+    add_msg(slack, state, "1700001001.000100", "U3", "@canopy ack return")
+
+    for _ in range(3):
+        tick_mod.tick(ctx, run=no_llm)
+
+    tree = ctx.tree(proj_id)
+    titles = [tree.node(c)["title"] for c in tree.children(nid)]
+    assert titles == ["慢查询定位"]          # exactly one, after three ticks
+
+
+def test_a_busy_thread_still_gives_up_on_a_poison_message(ctx, slack, tracked):
+    """The retry counter keys on the oldest message in the failing batch. Keyed
+    on the newest, a thread where people keep talking never gave up: the cursor
+    froze and every tick re-read a larger batch."""
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "@canopy ack return")
+
+    for i in range(4):
+        add_msg(slack, state, "17000010%02d.000100" % (10 + i), "U3", "继续聊")
+        tick_mod.tick(ctx, run=lambda *a, **k: "SKIP")
+
+    cursor = state_of(ctx, tracked)["cursor"]
+    assert float(cursor) > 1700001000.000100      # stepped over the poison
+
+
+def test_only_one_tick_runs_at_a_time(ctx, slack, tracked):
+    """A tick can outrun the cron interval (a worker holds a node for its whole
+    timeout), so without this ticks stack and each pays for the same work."""
+    from canopy import locks
+    # Real wall clock: the lock has an upper age bound, so a lock stamped with
+    # the fixture's frozen 2023 timestamp would read as ancient and be broken.
+    locks.acquire(ctx.dh, pid=999, alive=lambda pid: True)
+    try:
+        results = tick_mod.tick(ctx, alive=lambda pid: True, handle=no_llm)
+        assert results == [{"verdict": "tick-already-running"}]
+    finally:
+        locks.release(ctx.dh, pid=999)
+
+
+def test_the_tick_lock_is_released_afterwards(ctx, tracked):
+    from canopy import locks
+    tick_mod.tick(ctx, handle=no_llm)
+    assert not locks.lock_path(ctx.dh).exists()

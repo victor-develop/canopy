@@ -39,6 +39,7 @@ profile having run.
 | `opsview.py` | what that page shows, as data |
 | `events.py` | append-only log of ticks and workers |
 | `schedule.py` | the invariant: that line exists exactly when a node is active |
+| `effects.py` | the one door for subprocesses, crontab and opening a URL |
 | `config.py`, `paths.py`, `errors.py` | config defaults, data-home layout, error types |
 
 ## Two things worth knowing before changing this
@@ -55,8 +56,9 @@ passing a handler that raises if it is ever called.
 
 ## Tests
 
-`python3 -m pytest` — 200+ tests, no network, no Slack, no model. The fake
+`python3 -m pytest` — 218 tests, no network, no Slack, no model. The fake
 Slack in `tests/conftest.py` records every post, edit, and reaction, so tests
 assert on the exact text that would have hit the channel. An autouse fixture
-blocks the real runner, so a test that forgets to inject a fake fails loudly
-instead of quietly shelling out to codex.
+installs `effects.Recording()`, which refuses to spawn and raises an
+`EffectEscaped` (derived from `BaseException`, so the tick's own `except
+Exception` cannot swallow the alarm).

@@ -178,14 +178,24 @@ class Feed(object):
             segment["entries"].append(entry)
 
         used = segments[:max(1, cursor + 1)]
+        retired = [s for s in segments[len(used):] if s.get("ts")]
+
+        # Post the new segments first: a segment's header links the previous
+        # one, and that link is only real once the previous one has a ts.
         for segment in used:
             if segment.get("ts") is None:
-                segment["ts"] = self.slack.post(self.state["channel"],
-                                                self.render_segment(segment))
+                segment["ts"] = self.slack.post(self.state["channel"], "…")
                 self.state.setdefault("feed_ts", []).append(segment["ts"])
-                save_segments(self.node_dir, segments)
+                save_segments(self.node_dir, used)
 
         for i, segment in enumerate(used):
+            if i > 0:
+                # Fill the back-link now that every ts exists. Computed during
+                # layout it came out as `/archives/C1/pNone` — a segmented feed
+                # whose whole point is being walkable, that you cannot walk.
+                segment.setdefault("vars", {})["prev_segment_permalink"] = \
+                    config_mod.permalink(self.cfg, self.state["channel"],
+                                         used[i - 1]["ts"])
             text = self.render_segment(segment)
             if i < len(used) - 1:
                 nxt = used[i + 1]
@@ -197,7 +207,23 @@ class Feed(object):
                 })
                 segment["sealed"] = True
             self.slack.update(self.state["channel"], segment["ts"], text)
-            save_segments(self.node_dir, segments)
+            save_segments(self.node_dir, used)
+
+        # A rebuild can come out shorter (most chunks answered SKIP). Saving all
+        # the old segments while returning only the used ones left disk and Slack
+        # permanently disagreeing — and the next plain `append` then overwrote a
+        # sealed segment, footer and all.
+        for segment in retired:
+            self.slack.update(self.state["channel"], segment["ts"], self._render(
+                "feed-merged.md", {
+                    "title": self.state.get("title"),
+                    "segment_index": segment["index"],
+                    "first_permalink": config_mod.permalink(
+                        self.cfg, self.state["channel"], used[0]["ts"]),
+                }))
+            if segment["ts"] in (self.state.get("feed_ts") or []):
+                self.state["feed_ts"].remove(segment["ts"])
+        save_segments(self.node_dir, used)
         return used
 
     def _new_segment(self, previous):

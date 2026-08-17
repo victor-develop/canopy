@@ -8,16 +8,31 @@ that happened to be involved — which only guards the holes somebody already
 fell into.
 
 So the effects live here instead. Anything that spawns a process, edits the
-crontab, opens a browser or binds a port goes through this object, tests get
+crontab, opens a browser or opens a URL goes through this object, tests get
 `Recording()`, and a new effect added tomorrow has to come through the same
 door — or it has no way to reach the machine at all.
 
-Not covered on purpose: reads and writes inside `$CANOPY_DATA_HOME`. Those are
-the program's own state, tests point it at a tmp dir, and routing them through
-an effects object would obscure far more than it protects.
+Not covered on purpose:
+
+- reads and writes inside `$CANOPY_DATA_HOME` — the program's own state; tests
+  point it at a tmp dir, and routing it through here would obscure far more than
+  it protects.
+- binding a socket. `webserve` binds loopback on an ephemeral port in tests and
+  closes it in the same test; a seam would buy nothing. Said out loud because an
+  earlier version of this docstring claimed ports came through here, and a
+  promise the code does not keep is worse than no promise.
 """
 
 import subprocess
+
+
+class EffectEscaped(BaseException):
+    """A test reached a real side effect.
+
+    Derived from BaseException on purpose: application code catches `Exception`
+    in a few places to keep a tick alive, and that turned this alarm into a
+    green test with the message buried in a result dict.
+    """
 
 
 class Effects(object):
@@ -74,12 +89,12 @@ class Recording(Effects):
     def run(self, argv, stdin=None, timeout=None, cwd=None):
         self.calls.append({"argv": list(argv), "stdin": stdin, "cwd": cwd})
         if self._run is None:
-            raise AssertionError(
+            raise EffectEscaped(
                 "a test ran a subprocess with no stub: %r" % (list(argv),))
         return self._run(list(argv), stdin or "")
 
     def spawn(self, argv):
-        raise AssertionError("a test tried to spawn a process: %r" % (list(argv),))
+        raise EffectEscaped("a test tried to spawn a process: %r" % (list(argv),))
 
     def open_url(self, url):
         self.opened.append(str(url))

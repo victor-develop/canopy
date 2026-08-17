@@ -104,9 +104,6 @@ def no_machine_effects(monkeypatch, fake_crontab):
     """
     recording = effects_mod.Recording(run=fake_crontab["run"])
     monkeypatch.setattr(effects_mod, "DEFAULT", recording)
-    monkeypatch.setattr("canopy.runner._run",
-                        lambda *a, **k: (_ for _ in ()).throw(
-                            AssertionError("a test tried to run the real runner")))
     return recording
 
 

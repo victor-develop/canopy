@@ -110,6 +110,7 @@ def test_the_server_answers_html_and_json(dh, repo):
             assert exc.code == 404
     finally:
         httpd.shutdown()
+        httpd.server_close()
 
 
 def test_the_snapshot_is_rebuilt_per_request(dh, repo):
@@ -127,6 +128,7 @@ def test_the_snapshot_is_rebuilt_per_request(dh, repo):
         assert second["trees"][0]["project"] == "edd"
     finally:
         httpd.shutdown()
+        httpd.server_close()
 
 
 def test_it_binds_loopback_only(dh, repo):
@@ -137,6 +139,7 @@ def test_it_binds_loopback_only(dh, repo):
         assert httpd.server_address[0] == "127.0.0.1"
     finally:
         httpd.shutdown()
+        httpd.server_close()
 
 
 def test_start_background_reuses_a_live_viewer(dh, monkeypatch):
@@ -194,6 +197,7 @@ def test_a_request_keeps_it_alive(dh, repo):
         assert _t.time() - seen["at"] < 1     # the request refreshed the clock
     finally:
         httpd.shutdown()
+        httpd.server_close()
 
 
 def test_a_thread_title_cannot_close_the_script_tag(dh, repo):
@@ -251,4 +255,5 @@ def test_the_page_does_not_fork_a_crontab_per_request(dh, repo):
         assert len(calls) == 1
     finally:
         httpd.shutdown()
+        httpd.server_close()
         httpd.server_close()

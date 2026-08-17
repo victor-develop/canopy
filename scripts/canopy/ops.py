@@ -6,6 +6,7 @@ fork typed in the terminal cannot produce differently-shaped state — so the
 command layers stay thin and this module holds the behaviour.
 """
 
+import os
 import time
 from pathlib import Path
 
@@ -79,9 +80,17 @@ class tree_lock(object):
         self.dir = paths.project_dir(ctx.dh, proj_id)
         self.stale = int(ctx.cfg.get("lock_stale_seconds", 1800))
         self.held = None
+        self.reentered = False
 
     def __enter__(self):
         self.dir.mkdir(parents=True, exist_ok=True)
+        info = locks.read(self.dir) or {}
+        if info.get("pid") == os.getpid():
+            # Reentrant within one process: `fork` holds the lock and then calls
+            # `sync_treemap`, which takes it too. Without this the two deadlock
+            # for 30 seconds and then fail.
+            self.reentered = True
+            return self
         deadline = time.time() + 30
         while True:
             try:
@@ -93,7 +102,8 @@ class tree_lock(object):
                 time.sleep(0.2)
 
     def __exit__(self, *exc):
-        locks.release(self.dir)
+        if not self.reentered:
+            locks.release(self.dir)
         return False
 
 
@@ -123,6 +133,12 @@ def _states(ctx, tree):
 
 
 def sync_treemap(ctx, tree):
+    """Post or update the tree message(s), under the project lock."""
+    with tree_lock(ctx, tree.proj_id):
+        return _sync_treemap(ctx, tree)
+
+
+def _sync_treemap(ctx, tree):
     """Post or update the tree message(s). -> the segments, with their ts.
 
     Two passes on purpose: a segment's rows contain links to *other* segments,
@@ -207,7 +223,8 @@ def track(ctx, link, title=None, owner=None, locale=None, proj_id=None,
         if (paths.project_dir(ctx.dh, proj_id) / "tree.json").exists():
             raise ValueError("project %r already tracked" % (proj_id,))
     else:
-        suggested = shortid.suggest(ctx.cfg, title, ctx.dh, run=namer)
+        suggested = shortid.suggest(ctx.cfg, title, ctx.dh, run=namer,
+                                    effects=ctx.effects)
         proj_id = store.unique_proj_id(ctx.dh, suggested or store.slugify(title))
 
     for existing in store.list_projects(ctx.dh):
@@ -228,7 +245,7 @@ def track(ctx, link, title=None, owner=None, locale=None, proj_id=None,
     node_dir.mkdir(parents=True, exist_ok=True)
     store.save_state(ctx.dh, proj_id, state)
 
-    sync_treemap(ctx, tree)
+    _sync_treemap(ctx, tree)
     tree_link = treemap_mod.permalink(tree, ctx.cfg, nid)
     state["tree_permalink"] = tree_link
 
@@ -249,7 +266,7 @@ def track(ctx, link, title=None, owner=None, locale=None, proj_id=None,
 
     state["cursor"] = announce_ts
     store.save_state(ctx.dh, proj_id, state)
-    sync_treemap(ctx, tree)
+    _sync_treemap(ctx, tree)
 
     return {"proj_id": proj_id, "node_id": nid, "feed_ts": feed_ts,
             "announce_ts": announce_ts, "tree_permalink": tree_link,
@@ -495,4 +512,33 @@ def reply(ctx, proj_id, nid, body, agent=None):
     agent = agent or ctx.agent(state)
     text = ctx.render("reply.md", {"agent": agent, "body": body},
                       tree=tree, proj_id=proj_id)
+    _must_be_recognisable(text, agent)
     return ctx.slack.post(state["channel"], text, thread_ts=state["thread_ts"])
+
+
+def post_notice(ctx, proj_id, nid, template, agent=None, **values):
+    """A one-line notice from Canopy into the node's thread."""
+    tree = ctx.tree(proj_id)
+    state = store.load_state(ctx.dh, proj_id, nid)
+    agent = agent or ctx.agent(state)
+    text = ctx.render(template, dict(values, agent=agent), tree=tree,
+                      proj_id=proj_id)
+    _must_be_recognisable(text, agent)
+    return ctx.slack.post(state["channel"], text, thread_ts=state["thread_ts"])
+
+
+def _must_be_recognisable(text, agent):
+    """Refuse to post anything Canopy could not recognise as its own.
+
+    The tick skips its own messages by looking for the identity prefix. Edit
+    `reply.md` so the prefix moves or changes — which the whole
+    every-byte-is-a-template design invites — and Canopy answers its own reply,
+    every tick, burning a worker each time. Fail here, on the machine of the
+    person who just edited the template, instead of at 3am in the channel.
+    """
+    from . import mentions
+    if not mentions.is_own_post(text, [agent]):
+        raise ValueError(
+            "this template renders a message Canopy cannot recognise as its "
+            "own, which would make it reply to itself every tick; keep the "
+            "`[%s]` prefix at the start: %r" % (agent, text[:80]))

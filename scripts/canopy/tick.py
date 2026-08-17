@@ -38,7 +38,7 @@ def gate(ctx, proj_id, nid, state, now=None, alive=None, agents=()):
 MAX_RETRIES = 3
 
 
-def _advance(ctx, proj_id, state, cursor, outcome):
+def _advance(ctx, proj_id, state, cursor, outcome, batch_start=None):
     """Move the cursor — unless this batch failed, and not forever if it keeps.
 
     A soft failure (Slack down, runner exited non-zero) used to advance anyway,
@@ -57,7 +57,13 @@ def _advance(ctx, proj_id, state, cursor, outcome):
         store.save_state(ctx.dh, proj_id, state)
         return "advanced"
 
-    count = retries.get("count", 0) + 1 if retries.get("cursor") == cursor else 1
+    # Key on the OLDEST message in the failing batch, not the newest. The newest
+    # ts changes every time anybody says anything, so on a busy thread the
+    # counter reset every tick: the cursor froze, the batch grew without bound,
+    # and the prompt (and the bill) grew with it. The oldest ts is stable until
+    # the poison message is finally stepped over.
+    key = batch_start or cursor
+    count = retries.get("count", 0) + 1 if retries.get("batch_start") == key else 1
     if count >= MAX_RETRIES:
         state.pop("retries", None)
         state["cursor"] = cursor
@@ -70,7 +76,7 @@ def _advance(ctx, proj_id, state, cursor, outcome):
         })
         return "gave-up"
 
-    state["retries"] = {"cursor": cursor, "count": count}
+    state["retries"] = {"batch_start": key, "count": count}
     store.save_state(ctx.dh, proj_id, state)
     return "retrying"
 
@@ -90,11 +96,37 @@ def _outcome_word(outcome):
 
 
 def tick(ctx, now=None, alive=None, handle=None, out_file=None, run=None):
-    """Walk every tracked project once. -> one result dict per active node."""
+    """Walk every tracked project once. -> one result dict per active node.
+
+    One tick at a time, machine-wide. A tick can legitimately outrun the cron
+    interval — a node can hold a worker for its whole timeout, and the project
+    lock waits — so without this, ticks stack up and each one pays for the same
+    work. The lock lives in the data home and is broken if its holder dies.
+    """
     handle = handle or worker.handle
     results = []
     agents = worker.agent_names(ctx.dh)
+    try:
+        gate_lock = locks.acquire(ctx.dh, stale_after=int(
+            ctx.cfg.get("lock_stale_seconds", 1800)), alive=alive)
+    except LockedError:
+        return [{"verdict": "tick-already-running"}]
 
+    try:
+        results = _walk(ctx, agents, now=now, alive=alive, handle=handle,
+                        out_file=out_file, run=run)
+    finally:
+        locks.release(ctx.dh)
+
+    verdicts = {}
+    for row in results:
+        verdicts[row["verdict"]] = verdicts.get(row["verdict"], 0) + 1
+    events.append(ctx.dh, {"kind": "tick", "ts": time.time(), "verdicts": verdicts})
+    return results
+
+
+def _walk(ctx, agents, now=None, alive=None, handle=None, out_file=None, run=None):
+    results = []
     for proj_id, tree in sorted(ctx.trees().items()):
         for nid in sorted(tree.nodes):
             if tree.node(nid).get("status") != "active":
@@ -151,7 +183,8 @@ def tick(ctx, now=None, alive=None, handle=None, out_file=None, run=None):
                     })
                     # Re-read: a worker (or a fork) may have rewritten state.
                     state = store.load_state(ctx.dh, proj_id, nid)
-                    _advance(ctx, proj_id, state, payload["cursor"], outcome)
+                    _advance(ctx, proj_id, state, payload["cursor"], outcome,
+                             batch_start=messages[0]["ts"])
             except LockedError:
                 results.append({"project": proj_id, "node": nid,
                                 "verdict": "locked"})
@@ -160,9 +193,4 @@ def tick(ctx, now=None, alive=None, handle=None, out_file=None, run=None):
             results.append({"project": proj_id, "node": nid, "verdict": "work",
                             "messages": len(messages), "outcome": outcome,
                             "cursor": state["cursor"]})
-
-    verdicts = {}
-    for row in results:
-        verdicts[row["verdict"]] = verdicts.get(row["verdict"], 0) + 1
-    events.append(ctx.dh, {"kind": "tick", "ts": time.time(), "verdicts": verdicts})
     return results
