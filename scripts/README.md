@@ -42,6 +42,42 @@ profile having run.
 | `effects.py` | the one door for subprocesses, crontab and opening a URL |
 | `config.py`, `paths.py`, `errors.py` | config defaults, data-home layout, error types |
 
+## What four rounds of review found here
+
+An independent architect reviewed this runtime four times. Every round found real
+defects; the list below is what they had in common, because the same shapes will
+show up in the next change too.
+
+**Side effects with no seam.** The first two incidents were the same bug wearing
+different clothes: the test suite installed a cron entry into a developer's real
+crontab and left it there, and a later run scattered 59 detached HTTP servers
+that outlived it. Both were first "fixed" by stubbing the symbol involved — which
+only guards the hole somebody already fell into. `effects.py` exists so there is
+one door: subprocess, spawn, crontab, open-a-URL. If you add a fifth kind of
+effect, put it there, or a test will reach the machine.
+
+**Fixing the example instead of the class.** Twice in a row: command execution
+was made idempotent for `fork` while the reply path stayed re-entrant (the same
+answer posted three times, three full workers paid for); the identity-prefix
+guard was added to `reply` and `post_notice` while `fork-announce` and
+`return-post` — which land in a *parent* thread, before that node's cursor — kept
+posting unchecked. When you fix one call site, grep for the others.
+
+**Fixes that introduce quieter bugs.** Catching `Exception` in the tick stopped a
+crash and started swallowing the test guard rail. Holding the cursor on failure
+stopped losing messages and started replaying a poison one forever. A global tick
+lock stopped stacked ticks and made the ops page report "the tick crashed"
+whenever a long `recalibrate` held the lock. Each of these was a correct fix with
+a new failure mode attached; the second-order effect is the part to look for.
+
+**A test double that cannot express the failure.** The most valuable change in
+four rounds was three lines in `tests/conftest.py`: `FakeSlack.post` now appends
+into `threads`, and its timestamps are monotonic. Before that, nothing Canopy
+said could be read back, so "does Canopy recognise its own writing" — the thing
+standing between it and an infinite self-reply loop — was untestable, and two
+defects lived in that blind spot. If a class of bug keeps escaping, suspect the
+double before the code.
+
 ## Two things worth knowing before changing this
 
 **Structural commands never reach the model.** `fork`, `untrack`, `guide:`,
