@@ -52,8 +52,8 @@ def status(dh):
     if not info:
         return {"running": False}
     info = dict(info)
-    info["running"] = _alive(info.get("pid"))
-    info["url"] = "http://%s:%s/" % (HOST, info.get("port"))
+    info["running"] = _alive(info.get("pid")) and bool(info.get("port"))
+    info["url"] = ("http://%s:%s/" % (HOST, info["port"])) if info.get("port") else None
     return info
 
 
@@ -240,22 +240,28 @@ def start_background(dh, cfg, root=None, port=None, spawn=None, effects=None):
     if spawn is None and effects is not None:
         spawn = lambda argv, dh: effects.spawn(argv)
     spawn = spawn or _spawn
+    # Placeholder BEFORE spawning, so the child's own record is never clobbered
+    # by ours. The port is unknown until the child says so: writing the wanted
+    # port and then waiting for "something answers" reported a stranger's
+    # service whenever that port was already taken, and never self-corrected
+    # because the stranger kept answering.
+    store.write_json(state_path(dh), {"pid": None, "port": None})
     pid = spawn(argv, dh)
-    store.write_json(state_path(dh), {"pid": pid, "port": wanted})
 
-    # Wait briefly for the child to publish the port it really bound.
-    deadline = time.time() + 3
+    deadline = time.time() + float(cfg.get("serve_start_timeout", 3))
     while time.time() < deadline:
         recorded = store.read_json(state_path(dh), default={}) or {}
-        if recorded.get("pid") != pid and _responds(recorded.get("port")):
-            break
-        if _responds(recorded.get("port")):
+        if recorded.get("port") and _responds(recorded["port"]):
             break
         time.sleep(0.05)
     final = store.read_json(state_path(dh), default={}) or {}
-    port_final = final.get("port", wanted)
-    return {"pid": final.get("pid", pid), "port": port_final, "running": True,
-            "url": "http://%s:%s/" % (HOST, port_final)}
+    port_final = final.get("port")
+    if not port_final:
+        # It never came up. Record the pid so `serve --stop` can still reach it.
+        store.write_json(state_path(dh), {"pid": pid, "port": None})
+    return {"pid": final.get("pid") or pid, "port": port_final,
+            "running": bool(port_final),
+            "url": ("http://%s:%s/" % (HOST, port_final)) if port_final else None}
 
 
 def _responds(port):

@@ -107,7 +107,7 @@ def tick(ctx, now=None, alive=None, handle=None, out_file=None, run=None):
     results = []
     agents = worker.agent_names(ctx.dh)
     try:
-        gate_lock = locks.acquire(ctx.dh, stale_after=int(
+        locks.acquire(ctx.dh, stale_after=int(
             ctx.cfg.get("lock_stale_seconds", 1800)), alive=alive)
     except LockedError:
         # Still a heartbeat. Without this the ops page saw no tick for however

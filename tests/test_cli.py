@@ -35,7 +35,8 @@ def test_track_registers_cron_and_prints_links(cli_env, capsys, monkeypatch):
     monkeypatch.setattr(cli.schedule, "sync",
                         lambda dh, cfg, **kw: installed.update(
                             cmd=cli.schedule.tick_command(), synced=True))
-    monkeypatch.setattr(cli_env["effects"], "spawn", lambda argv: 4242)
+    monkeypatch.setattr(cli_env["effects"], "spawn",
+                        lambda argv: 4242)
 
     code = run(["track", "https://example.slack.com/archives/C0PAY/p1699000001000100",
                 "--title", "支付超时", "--project", "pay"])
@@ -248,7 +249,16 @@ def test_tick_logs_the_failure_too(cli_env, monkeypatch, capsys):
 def test_track_starts_the_viewer_and_opens_it(cli_env, capsys, monkeypatch):
     spawned = []
     effects = cli_env["effects"]
-    monkeypatch.setattr(effects, "spawn", lambda argv: spawned.append(argv) or 4242)
+    def spawn(argv):
+        # What the real child does before the parent reports a URL.
+        from canopy import store, webserve
+        spawned.append(argv)
+        store.write_json(webserve.state_path(cli_env["dh"]),
+                         {"pid": 4242, "port": 4321})
+        return 4242
+
+    monkeypatch.setattr(effects, "spawn", spawn)
+    monkeypatch.setattr(cli.webserve, "_responds", lambda port: True)
     opened = effects.opened
     monkeypatch.setattr(cli.runner_mod, "resolve_path", lambda r: "/abs/x")
     monkeypatch.setattr(cli.schedule, "sync", lambda dh, cfg, **kw: None)
@@ -264,8 +274,15 @@ def test_track_starts_the_viewer_and_opens_it(cli_env, capsys, monkeypatch):
 
 def test_serve_status_and_stop(cli_env, capsys, monkeypatch):
     from canopy import webserve
-    monkeypatch.setattr(cli_env["effects"], "spawn", lambda argv: 4242)
+    def spawn(argv):
+        from canopy import store
+        store.write_json(webserve.state_path(cli_env["dh"]),
+                         {"pid": 4242, "port": 4321})
+        return 4242
+
+    monkeypatch.setattr(cli_env["effects"], "spawn", spawn)
     monkeypatch.setattr(webserve, "_alive", lambda pid: True)
+    monkeypatch.setattr(webserve, "_responds", lambda port: True)
     run(["serve", "--background", "--no-open"])
     capsys.readouterr()
 

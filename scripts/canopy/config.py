@@ -23,6 +23,7 @@ DEFAULTS = {
     "shortid_timeout_seconds": 90,
     "serve_port": 8787,
     "serve_idle_timeout": 1800,
+    "serve_start_timeout": 3,
     "stale_days": 3,
     "lock_stale_seconds": 1800,
     "feed_segment_max_chars": 3500,

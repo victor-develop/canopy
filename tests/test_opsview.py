@@ -142,12 +142,28 @@ def test_it_binds_loopback_only(dh, repo):
         httpd.server_close()
 
 
+def fake_child(dh, port=4300, pid=99):
+    """Stands in for the spawned viewer: records the port it bound, as the real
+    child does before the parent reports any URL."""
+    from canopy import store, webserve
+
+    def spawn(argv, _dh):
+        store.write_json(webserve.state_path(dh), {"pid": pid, "port": port})
+        return pid
+    return spawn
+
+
 def test_start_background_reuses_a_live_viewer(dh, monkeypatch):
     from canopy import webserve
     spawned = []
-    monkeypatch.setattr(webserve, "_spawn", lambda argv, dh: spawned.append(argv) or 99)
-    monkeypatch.setattr(webserve, "_alive", lambda pid: True)
+    child = fake_child(dh)
 
+    def spawn(argv, d):
+        spawned.append(argv)
+        return child(argv, d)
+
+    monkeypatch.setattr(webserve, "_spawn", spawn)
+    monkeypatch.setattr(webserve, "_alive", lambda pid: True)
     monkeypatch.setattr(webserve, "_responds", lambda port: True)
     first = webserve.start_background(dh, {})
     second = webserve.start_background(dh, {})
@@ -161,8 +177,8 @@ def test_a_dead_viewer_is_replaced(dh, monkeypatch):
     monkeypatch.setattr(webserve, "_spawn", lambda argv, dh: spawned.append(argv) or 99)
     monkeypatch.setattr(webserve, "_alive", lambda pid: False)
     monkeypatch.setattr(webserve, "_responds", lambda port: False)
-    webserve.start_background(dh, {})
-    webserve.start_background(dh, {})
+    webserve.start_background(dh, {"serve_start_timeout": 0})
+    webserve.start_background(dh, {"serve_start_timeout": 0})
     assert len(spawned) == 2
 
 
@@ -257,3 +273,28 @@ def test_the_page_does_not_fork_a_crontab_per_request(dh, repo):
         httpd.shutdown()
         httpd.server_close()
         httpd.server_close()
+
+
+def test_start_background_reports_the_port_the_child_actually_bound(dh, monkeypatch):
+    """A stranger already on the wanted port used to be reported as ours — and
+    it never self-corrected, because the stranger kept answering."""
+    import socket as _socket
+    from canopy import store, webserve
+
+    squatter = _socket.socket()
+    squatter.bind(("127.0.0.1", 0))
+    squatter.listen(1)
+    taken = squatter.getsockname()[1]
+
+    def spawn(argv, _dh):
+        # What the real child does: bind something else, then record it.
+        store.write_json(webserve.state_path(dh), {"pid": 4242, "port": taken + 1})
+        return 4242
+
+    monkeypatch.setattr(webserve, "_alive", lambda pid: True)
+    monkeypatch.setattr(webserve, "_responds", lambda port: port == taken + 1)
+    try:
+        info = webserve.start_background(dh, {"serve_port": taken}, spawn=spawn)
+        assert info["port"] == taken + 1
+    finally:
+        squatter.close()
