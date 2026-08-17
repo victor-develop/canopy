@@ -54,12 +54,25 @@ def test_lock_blocks_a_second_worker(tmp_path):
         locks.acquire(tmp_path, pid=5678, now=101, alive=lambda pid: True)
 
 
-def test_stale_lock_is_broken(tmp_path):
+def test_a_live_worker_keeps_its_lock_however_long_it_runs(tmp_path):
+    """`recalibrate` can legitimately run for hours. Breaking its lock on a
+    staleness rule put a second worker into the same node."""
     locks.acquire(tmp_path, pid=1234, now=100, alive=lambda pid: True)
-    # Older than the staleness timeout: a worker that died without releasing
-    # must not park a node forever.
-    assert locks.acquire(tmp_path, pid=5678, now=100 + 3600, stale_after=1800,
+    assert locks.is_held(tmp_path, now=100 + 36000, stale_after=1800,
                          alive=lambda pid: True)
+
+
+def test_a_pidless_lock_is_broken_once_stale(tmp_path):
+    locks.lock_path(tmp_path).write_text('{"started": 100}', encoding="utf-8")
+    assert locks.is_held(tmp_path, now=200, stale_after=1800)
+    assert not locks.is_held(tmp_path, now=100 + 3600, stale_after=1800)
+
+
+def test_release_never_removes_someone_elses_lock(tmp_path):
+    locks.acquire(tmp_path, pid=1234, now=100, alive=lambda pid: True)
+    assert locks.release(tmp_path, pid=9999) is False
+    assert locks.lock_path(tmp_path).exists()
+    assert locks.release(tmp_path, pid=1234) is True
 
 
 def test_dead_process_lock_is_broken(tmp_path):

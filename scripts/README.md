@@ -55,7 +55,7 @@ passing a handler that raises if it is ever called.
 
 ## Tests
 
-`python3 -m pytest` — 166 tests, no network, no Slack, no model. The fake
+`python3 -m pytest` — 200+ tests, no network, no Slack, no model. The fake
 Slack in `tests/conftest.py` records every post, edit, and reaction, so tests
 assert on the exact text that would have hit the channel. An autouse fixture
 blocks the real runner, so a test that forgets to inject a fake fails loudly

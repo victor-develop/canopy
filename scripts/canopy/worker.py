@@ -11,6 +11,16 @@ from .errors import CanopyError
 from .prompts import SKIP
 
 
+def _last_line(text):
+    """The answer is the runner's last non-empty line.
+
+    A runner without `-o` prints its own chatter first; taking the first line
+    published a banner as a checkpoint.
+    """
+    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    return lines[-1] if lines else ""
+
+
 def agent_names(dh):
     from . import paths
     directory = paths.profiles_dir(dh)
@@ -20,22 +30,41 @@ def agent_names(dh):
 
 
 def classify(messages, agents):
-    """-> ("command"|"agent"|"chatter", details).
+    """-> {"kind", "commands": [...], "question": {...}|None}.
 
-    Commands win over a free-form question in the same batch: if someone typed
-    `@canopy fork X`, the fork is the point.
+    Every structural command in the batch is kept, in order. Returning only the
+    first one silently dropped the rest: two people typing `@canopy fork …`
+    within one tick window produced one child, and the second fork was gone with
+    no log and no reply — while the cursor moved past it.
     """
+    commands, question = [], None
     for msg in messages:
-        for agent in mentions.mentioned_agents(msg.get("text") or "", agents):
-            cmd, arg = mentions.parse(msg.get("text") or "", agent)
+        text = msg.get("text") or ""
+        for agent in mentions.mentioned_agents(text, agents):
+            cmd, arg = mentions.parse(text, agent)
             if cmd:
-                return "command", {"message": msg, "agent": agent,
-                                   "command": cmd, "arg": arg}
-    for msg in messages:
-        found = mentions.mentioned_agents(msg.get("text") or "", agents)
-        if found:
-            return "agent", {"message": msg, "agent": found[0]}
-    return "chatter", {}
+                commands.append({"message": msg, "agent": agent,
+                                 "command": cmd, "arg": arg})
+            elif question is None:
+                question = {"message": msg, "agent": agent}
+    kind = "command" if commands else ("agent" if question else "chatter")
+    return {"kind": kind, "commands": commands, "question": question}
+
+
+def _execute(ctx, proj_id, nid, messages, plan, out_file=None, run=None):
+    """Commands first, in order; then one reply if somebody also asked something."""
+    results = []
+    for detail in plan["commands"]:
+        results.append(run_command(ctx, proj_id, nid, detail, out_file=out_file))
+    if plan["question"]:
+        results.append(run_full(ctx, proj_id, nid, messages,
+                                plan["question"]["agent"], out_file=out_file,
+                                run=run))
+    if not results:
+        return run_light(ctx, proj_id, nid, messages, out_file=out_file, run=run)
+    if len(results) == 1:
+        return dict(results[0], kind=plan["kind"])
+    return {"kind": plan["kind"], "steps": results}
 
 
 def run_command(ctx, proj_id, nid, detail, out_file=None):
@@ -47,6 +76,10 @@ def run_command(ctx, proj_id, nid, detail, out_file=None):
 
     if cmd == "fork":
         if not arg:
+            # Say so in the thread: a silent no-op leaves the person who typed
+            # it believing a child thread exists somewhere.
+            ops.reply(ctx, proj_id, nid,
+                      "`fork` 需要一个标题:`@%s fork <标题>`" % agent, agent=agent)
             return {"command": cmd, "skipped": "fork needs a title"}
         return dict(ops.fork(ctx, proj_id, nid, arg, agent=agent), command=cmd)
     if cmd == "guide":
@@ -105,11 +138,12 @@ def run_light(ctx, proj_id, nid, messages, out_file=None, run=None):
     )
     answer = ((run or runner_mod.run)(ctx.cfg, prompt, node_dir,
                                       out_file=out_file) or "").strip()
+    answer = _last_line(answer)
     if not answer or answer == SKIP:
         return {"kind": "light", "appended": False}
     last = messages[-1] if messages else {}
     result = ops.append_checkpoint(
-        ctx, proj_id, nid, answer.splitlines()[0].strip(),
+        ctx, proj_id, nid, answer,
         author=last.get("user") or "",
         raw_permalink=ctx.permalink(state["channel"], last.get("ts") or
                                     state["thread_ts"]),
@@ -163,13 +197,13 @@ def recalibrate(ctx, proj_id, nid, chunk_size=80, out_file=None, run=None):
 def handle(ctx, proj_id, nid, messages, agents=None, out_file=None, run=None):
     """One node, one batch of new messages. -> what was done, for the tick log."""
     agents = agents if agents is not None else agent_names(ctx.dh)
-    kind, detail = classify(messages, agents)
+    plan = classify(messages, agents)
     try:
-        if kind == "command":
-            return run_command(ctx, proj_id, nid, detail, out_file=out_file)
-        if kind == "agent":
-            return run_full(ctx, proj_id, nid, messages, detail["agent"],
-                            out_file=out_file, run=run)
-        return run_light(ctx, proj_id, nid, messages, out_file=out_file, run=run)
-    except CanopyError as exc:
-        return {"kind": kind, "error": str(exc)}
+        return _execute(ctx, proj_id, nid, messages, plan, out_file=out_file,
+                        run=run)
+    except Exception as exc:
+        # Anything, not just CanopyError. `ack return` with no draft raises a
+        # plain ValueError; letting that escape killed the whole tick, left the
+        # cursor unmoved, and replayed the same message every five minutes
+        # forever — while every project after this one stopped being watched.
+        return {"kind": plan["kind"], "error": "%s: %s" % (type(exc).__name__, exc)}

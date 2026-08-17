@@ -182,6 +182,23 @@ climbing and goes red past two intervals.
 duration and outcome. `tick.log` answers "did it run"; this answers "on what,
 and how long did it take".
 
+## Every touch of the machine goes through one object
+
+`effects.py` owns the four things that reach outside the data home: running a
+subprocess, spawning a process that outlives us, editing the crontab, opening a
+browser. `Ctx` holds one; tests hold a `Recording()` that refuses to spawn.
+
+This exists because of two incidents with the same shape — side effects
+reachable from a command handler with no seam. The test suite installed a real
+cron entry into the developer's crontab and left it there; a later run scattered
+59 detached HTTP servers that outlived it. Patching the three symbols involved
+would only have guarded the holes already fallen into. One door means the next
+effect somebody adds cannot reach the machine from a test at all.
+
+Reads and writes **inside** `$CANOPY_DATA_HOME` deliberately do not go through
+it: that is the program's own state, tests point it at a tmp dir, and routing it
+through an effects object would obscure more than it protects.
+
 ## Code / data separation — never write into the skill
 
 The skill is a git repo that gets installed by many people and PR'd back.

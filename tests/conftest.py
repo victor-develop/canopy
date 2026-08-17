@@ -8,6 +8,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts"))
 
 from canopy import config as config_mod  # noqa: E402
+from canopy import effects as effects_mod  # noqa: E402
 from canopy import ops, paths, store  # noqa: E402
 
 
@@ -74,36 +75,10 @@ class FakeSlack(object):
         return None
 
 
-@pytest.fixture(autouse=True)
-def no_real_runner(monkeypatch):
-    """No test may spawn a real codex/claude: it would hang or cost money."""
-    def refuse(*args, **kwargs):
-        raise AssertionError("a test tried to spawn the real runner")
-    monkeypatch.setattr("canopy.runner._run", refuse)
-
-
-@pytest.fixture(autouse=True)
-def no_real_subprocess(monkeypatch):
-    """No test may leave a process behind.
-
-    `track` starts the ops viewer, and a dozen tests call `track`. Unstubbed,
-    each pytest run scattered detached HTTP servers across the machine — 59 of
-    them survived one afternoon before anyone noticed. Guard it the same way as
-    the runner: fail loudly rather than fork.
-    """
-    def refuse(argv, dh):
-        raise AssertionError("a test tried to spawn a real process: %r" % (argv,))
-    monkeypatch.setattr("canopy.webserve._spawn", refuse)
-
-
-@pytest.fixture(autouse=True)
-def fake_crontab(monkeypatch):
-    """Never touch the developer's real crontab.
-
-    `tick` and `ops` keep the cron entry in step with the tree, so any test that
-    runs them would otherwise install a job pointing at a pytest tmp dir — which
-    is exactly what happened once, and it survived the test run.
-    """
+@pytest.fixture
+def fake_crontab():
+    """An in-memory crontab. The real one is off limits: a test once installed
+    a job pointing at a pytest tmp dir and left it there."""
     state = {"text": ""}
 
     def run(argv, stdin=""):
@@ -114,8 +89,25 @@ def fake_crontab(monkeypatch):
             return 0, "", ""
         raise AssertionError("unexpected command in a test: %r" % (argv,))
 
-    monkeypatch.setattr("canopy.cron._run", run)
+    state["run"] = run
     return state
+
+
+@pytest.fixture(autouse=True)
+def no_machine_effects(monkeypatch, fake_crontab):
+    """One door for every touch of the machine, and it is shut.
+
+    Replaces what used to be three separate symbol patches (runner, crontab,
+    spawn). Those only guarded the holes somebody had already fallen into; a
+    Recording() refuses anything it was not explicitly taught, so the next
+    effect somebody adds fails in tests instead of on a laptop.
+    """
+    recording = effects_mod.Recording(run=fake_crontab["run"])
+    monkeypatch.setattr(effects_mod, "DEFAULT", recording)
+    monkeypatch.setattr("canopy.runner._run",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("a test tried to run the real runner")))
+    return recording
 
 
 @pytest.fixture
@@ -137,11 +129,12 @@ def slack():
 
 
 @pytest.fixture
-def ctx(dh, slack, repo):
+def ctx(dh, slack, repo, no_machine_effects):
     cfg = config_mod.load(dh)
     cfg["slack_workspace_url"] = "https://example.slack.com"
     config_mod.save(dh, cfg)
-    return ops.Ctx(dh, cfg=cfg, slack=slack, root=repo, now=lambda: 1700000000.0)
+    return ops.Ctx(dh, cfg=cfg, slack=slack, root=repo, now=lambda: 1700000000.0,
+                   effects=no_machine_effects)
 
 
 @pytest.fixture

@@ -31,12 +31,17 @@ def append(dh, event, keep=KEEP):
 
 
 def _trim(p, keep):
+    # Cheap gate first: reading the whole file on every append is what makes a
+    # log expensive. 40 bytes is below any real event line, so this can only
+    # skip the read when the file is definitely still short.
     try:
+        if p.stat().st_size < keep * 40:
+            return
         with p.open(encoding="utf-8") as fh:
             lines = fh.readlines()
     except OSError:
         return
-    if len(lines) <= keep * 1.25:      # trim in batches, not every write
+    if len(lines) <= keep * 1.25:
         return
     fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=".tmp-events-")
     with os.fdopen(fd, "w", encoding="utf-8") as fh:

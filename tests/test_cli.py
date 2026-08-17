@@ -8,7 +8,8 @@ from canopy import cli, config as config_mod, ops, paths, store
 
 
 @pytest.fixture
-def cli_env(dh, slack, repo, monkeypatch):
+def cli_env(dh, slack, repo, monkeypatch, no_machine_effects):
+    effects = no_machine_effects
     """Wire every `_ctx()` in the CLI to the fake Slack and this data home."""
     cfg = config_mod.load(dh)
     cfg["slack_workspace_url"] = "https://example.slack.com"
@@ -16,10 +17,10 @@ def cli_env(dh, slack, repo, monkeypatch):
 
     def fake_ctx(args):
         return ops.Ctx(dh, cfg=config_mod.load(dh), slack=slack, root=repo,
-                       now=lambda: 1700000000.0)
+                       now=lambda: 1700000000.0, effects=effects)
 
     monkeypatch.setattr(cli, "_ctx", fake_ctx)
-    return {"dh": dh, "slack": slack}
+    return {"dh": dh, "slack": slack, "effects": effects}
 
 
 def run(argv):
@@ -34,8 +35,7 @@ def test_track_registers_cron_and_prints_links(cli_env, capsys, monkeypatch):
     monkeypatch.setattr(cli.schedule, "sync",
                         lambda dh, cfg, **kw: installed.update(
                             cmd=cli.schedule.tick_command(), synced=True))
-    monkeypatch.setattr(cli.webserve, "_spawn", lambda argv, dh: 4242)
-    monkeypatch.setattr(cli, "_open", lambda url: True)
+    monkeypatch.setattr(cli_env["effects"], "spawn", lambda argv: 4242)
 
     code = run(["track", "https://example.slack.com/archives/C0PAY/p1699000001000100",
                 "--title", "支付超时", "--project", "pay"])
@@ -59,7 +59,7 @@ def test_track_refuses_when_the_runner_is_not_on_path(cli_env, monkeypatch, caps
     code = run(["track", "https://example.slack.com/archives/C0PAY/p1699000001000100",
                 "--project", "pay"])
     assert code == 1
-    assert "No cron job was registered" in capsys.readouterr().err
+    assert "Nothing was tracked" in capsys.readouterr().err
 
 
 def track_one(cli_env, project="pay", channel="C0PAY", ts="1699000001.000100",
@@ -246,10 +246,10 @@ def test_tick_logs_the_failure_too(cli_env, monkeypatch, capsys):
 
 
 def test_track_starts_the_viewer_and_opens_it(cli_env, capsys, monkeypatch):
-    opened, spawned = [], []
-    monkeypatch.setattr(cli, "_open", lambda url: opened.append(str(url)) or True)
-    monkeypatch.setattr(cli.webserve, "_spawn",
-                        lambda argv, dh: spawned.append(argv) or 4242)
+    spawned = []
+    effects = cli_env["effects"]
+    monkeypatch.setattr(effects, "spawn", lambda argv: spawned.append(argv) or 4242)
+    opened = effects.opened
     monkeypatch.setattr(cli.runner_mod, "resolve_path", lambda r: "/abs/x")
     monkeypatch.setattr(cli.schedule, "sync", lambda dh, cfg, **kw: None)
     cli_env["slack"].add("C0PAY", "1699000001.000100", "1699000001.000100", "U1", "支付超时")
@@ -264,8 +264,7 @@ def test_track_starts_the_viewer_and_opens_it(cli_env, capsys, monkeypatch):
 
 def test_serve_status_and_stop(cli_env, capsys, monkeypatch):
     from canopy import webserve
-    monkeypatch.setattr(cli, "_open", lambda url: True)
-    monkeypatch.setattr(webserve, "_spawn", lambda argv, dh: 4242)
+    monkeypatch.setattr(cli_env["effects"], "spawn", lambda argv: 4242)
     monkeypatch.setattr(webserve, "_alive", lambda pid: True)
     run(["serve", "--background", "--no-open"])
     capsys.readouterr()
@@ -277,3 +276,27 @@ def test_serve_status_and_stop(cli_env, capsys, monkeypatch):
     monkeypatch.setattr("os.kill", lambda pid, sig: killed.append(pid))
     run(["serve", "--stop"])
     assert killed == [4242]
+
+
+def test_track_resolves_the_runner_before_posting_anything(cli_env, monkeypatch,
+                                                           capsys):
+    """A failed resolve must leave no tree and no messages — the old order
+    built the tree first and only then discovered codex was missing."""
+    def missing(_runner):
+        from canopy.errors import RunnerError
+        raise RunnerError("cannot find 'codex' on PATH")
+
+    monkeypatch.setattr(cli.runner_mod, "resolve_path", missing)
+    cli_env["slack"].add("C0PAY", "1699000001.000100", "1699000001.000100", "U1", "支付超时")
+
+    assert run(["track", "https://example.slack.com/archives/C0PAY/p1699000001000100",
+                "--project", "pay"]) == 1
+    assert cli_env["slack"].posted == []
+    assert not (cli_env["dh"] / "projects" / "pay").exists()
+
+
+def test_project_flag_cannot_escape_the_data_home(cli_env, capsys):
+    cli_env["slack"].add("C0PAY", "1699000001.000100", "1699000001.000100", "U1", "x")
+    assert run(["track", "https://example.slack.com/archives/C0PAY/p1699000001000100",
+                "--project", "../../etc/canopy"]) == 1
+    assert "plain name" in capsys.readouterr().err

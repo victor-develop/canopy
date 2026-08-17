@@ -194,3 +194,61 @@ def test_a_request_keeps_it_alive(dh, repo):
         assert _t.time() - seen["at"] < 1     # the request refreshed the clock
     finally:
         httpd.shutdown()
+
+
+def test_a_thread_title_cannot_close_the_script_tag(dh, repo):
+    """Every string in the snapshot came from Slack; a title is whatever the
+    person who opened the thread typed."""
+    tree = store.Tree.new("pay", "C1-1.0", "</script><img src=x onerror=alert(1)>",
+                          "A君")
+    tree.save(dh)
+    html = opsview.render(snapshot_of(dh, run=lambda argv, stdin="": (0, "", "")),
+                          root=repo)
+    assert "</script><img" not in html
+    assert "\\u003c/script\\u003e" in html
+
+
+def test_embed_escapes_line_separators():
+    # U+2028/9 are valid JSON but break a JS literal.
+    assert "\\u2028" in opsview.embed({"x": "a\u2028b"})
+
+
+def test_a_silent_connection_cannot_wedge_the_server(dh, repo):
+    """Chrome's speculative preconnect opens a socket and says nothing. On a
+    single-threaded server that blocked every later request and shutdown()."""
+    import socket as _socket
+    import urllib.request
+    from canopy import webserve
+
+    httpd, base = webserve.serve_in_thread(dh, {}, root=repo, port=0,
+                                           run=lambda argv, stdin="": (0, "", ""))
+    silent = _socket.create_connection(("127.0.0.1", httpd.server_port))
+    try:
+        got = urllib.request.urlopen(base + "/api/snapshot", timeout=5).read()
+        assert json.loads(got.decode("utf-8"))["trees"] == []
+    finally:
+        silent.close()
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_the_page_does_not_fork_a_crontab_per_request(dh, repo):
+    """It advertises itself as read-only; it was shelling out 720×/hour."""
+    import urllib.request
+    from canopy import webserve
+
+    calls = []
+
+    def counting(argv, stdin=""):
+        calls.append(argv)
+        return (0, "", "")
+
+    httpd, base = webserve.serve_in_thread(
+        dh, {}, root=repo, port=0, run=webserve._cached_crontab_from(counting))
+    try:
+        for _ in range(5):
+            urllib.request.urlopen(base + "/api/snapshot", timeout=5).read()
+        assert len(calls) == 1
+    finally:
+        httpd.shutdown()
+        httpd.server_close()

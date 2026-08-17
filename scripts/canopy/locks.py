@@ -11,7 +11,7 @@ import os
 import time
 from pathlib import Path
 
-from .errors import LockedError
+from .errors import LockedError  # re-exported for callers
 
 LOCK_NAME = "lock"
 
@@ -48,15 +48,16 @@ def is_held(node_dir, now=None, stale_after=1800, alive=None):
     if info is None:
         return False
     now = time.time() if now is None else now
-    if now - float(info.get("started") or 0) > stale_after:
-        return False
-    if not info.get("pid"):
-        # Unreadable lock: fall back to the staleness window rather than
-        # breaking it. Two workers posting into one thread is worse than one
-        # node waiting a few ticks.
-        return True
-    alive_fn = alive or _alive
-    return alive_fn(info.get("pid"))
+    pid = info.get("pid")
+    if pid:
+        # A live process holds its lock however long it takes. `recalibrate`
+        # can legitimately run for hours (chunked history × runner timeout);
+        # breaking its lock on a 30-minute staleness rule put a second worker
+        # into the same node, both rewriting the same feed.
+        return (alive or _alive)(pid)
+    # No readable pid: fall back to the staleness window rather than breaking
+    # it outright. Two workers in one thread is worse than one node waiting.
+    return now - float(info.get("started") or 0) <= stale_after
 
 
 def acquire(node_dir, pid=None, now=None, stale_after=1800, alive=None):
@@ -70,12 +71,22 @@ def acquire(node_dir, pid=None, now=None, stale_after=1800, alive=None):
     return payload
 
 
-def release(node_dir):
+def release(node_dir, pid=None):
+    """Only ever remove your own lock.
+
+    A worker that overran and got its lock broken used to delete the *new*
+    holder's lock on the way out, leaving the node unlocked with a worker still
+    inside it.
+    """
     path = lock_path(node_dir)
-    if path.exists():
-        path.unlink()
-        return True
-    return False
+    if not path.exists():
+        return False
+    info = read(node_dir) or {}
+    mine = pid if pid is not None else os.getpid()
+    if info.get("pid") not in (None, mine):
+        return False
+    path.unlink()
+    return True
 
 
 class held(object):
@@ -93,5 +104,5 @@ class held(object):
                        stale_after=self.stale_after, alive=self.alive)
 
     def __exit__(self, *exc):
-        release(self.node_dir)
+        release(self.node_dir, pid=self.pid if self.pid is not None else None)
         return False

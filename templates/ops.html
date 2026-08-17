@@ -112,7 +112,8 @@ function ago(ts){
   return (s/86400).toFixed(1) + " 天";
 }
 function secs(v){ return v == null ? "—" : (v < 60 ? v.toFixed(1)+"s" : (v/60).toFixed(1)+"m"); }
-function esc(s){ return String(s == null ? "" : s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+function esc(s){ return String(s == null ? "" : s).replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function pill(text, kind){ return `<span class="pill ${kind||""}">${esc(text)}</span>`; }
 
 function heartbeat(){

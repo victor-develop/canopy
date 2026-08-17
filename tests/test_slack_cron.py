@@ -226,3 +226,23 @@ def test_the_suite_cannot_touch_the_real_crontab(fake_crontab):
     from canopy import cron
     cron.install("/bin/tick", 5, data_home="/tmp/x")
     assert "# canopy" in fake_crontab["text"]
+
+
+def test_the_effects_door_refuses_anything_it_was_not_taught(no_machine_effects):
+    """The guard that replaces three symbol patches: a new side effect added
+    tomorrow fails here instead of on someone's laptop."""
+    import pytest as _pytest
+    from canopy import effects as effects_mod
+
+    with _pytest.raises(AssertionError):
+        no_machine_effects.spawn(["some-new-daemon"])
+    assert effects_mod.DEFAULT is no_machine_effects       # nothing bypasses it
+
+
+def test_recording_effects_report_what_was_attempted():
+    from canopy import effects as effects_mod
+    rec = effects_mod.Recording(run=lambda argv, stdin="": (0, "ok", ""))
+    assert rec.run(["crontab", "-l"]) == (0, "ok", "")
+    assert rec.calls[0]["argv"] == ["crontab", "-l"]
+    rec.open_url("http://127.0.0.1:1/")
+    assert rec.opened == ["http://127.0.0.1:1/"]

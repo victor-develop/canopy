@@ -148,16 +148,24 @@ class Feed(object):
         return {"ts": ts, "segment": index, "sealed": True}
 
     def rebuild(self, entries):
-        """`recalibrate`: rewrite every segment in one pass.
+        """`recalibrate`: rewrite the whole feed in one pass.
 
-        Sealed segments are rewritten here and only here — that is the whole
-        point of the heavy path.
+        Two things this must not do, both learned the hard way: overflow a
+        segment past Slack's length cap (the old version packed the tail into
+        the last segment and produced a message `chat.update` rejects), and
+        leave Slack and disk disagreeing when a later update fails (it rewrote
+        segments one by one and saved only at the end).
+
+        So: lay out every segment first, growing new ones when needed, then
+        write. Each successful update is persisted as it happens, so a failure
+        halfway leaves a feed that is short, not a feed that is wrong.
         """
         segments = load_segments(self.node_dir)
         if not segments:
             raise ValueError("feed has no segments yet")
         for segment in segments:
             segment["entries"] = []
+
         cursor = 0
         for entry in entries:
             segment = segments[cursor]
@@ -165,16 +173,22 @@ class Feed(object):
             if len(candidate) > self.max_chars and segment["entries"]:
                 cursor += 1
                 if cursor >= len(segments):
-                    # More content than segments: keep the tail in the last one
-                    # rather than dropping checkpoints on the floor.
-                    cursor = len(segments) - 1
+                    segments.append(self._new_segment(segments[-1]))
                 segment = segments[cursor]
             segment["entries"].append(entry)
 
-        for i, segment in enumerate(segments):
+        used = segments[:max(1, cursor + 1)]
+        for segment in used:
+            if segment.get("ts") is None:
+                segment["ts"] = self.slack.post(self.state["channel"],
+                                                self.render_segment(segment))
+                self.state.setdefault("feed_ts", []).append(segment["ts"])
+                save_segments(self.node_dir, segments)
+
+        for i, segment in enumerate(used):
             text = self.render_segment(segment)
-            if i < len(segments) - 1:
-                nxt = segments[i + 1]
+            if i < len(used) - 1:
+                nxt = used[i + 1]
                 text += "\n\n" + self._render("feed-sealed-footer.md", {
                     "segment_index": segment["index"],
                     "next_segment_index": nxt["index"],
@@ -183,5 +197,26 @@ class Feed(object):
                 })
                 segment["sealed"] = True
             self.slack.update(self.state["channel"], segment["ts"], text)
-        save_segments(self.node_dir, segments)
-        return segments
+            save_segments(self.node_dir, segments)
+        return used
+
+    def _new_segment(self, previous):
+        """A fresh, unposted segment continuing `previous`."""
+        index = previous["index"] + 1
+        return {
+            "index": index,
+            "kind": "segment",
+            "vars": {
+                "title": self.state.get("title"),
+                "alias": (previous.get("vars") or {}).get("alias"),
+                "segment_index": index,
+                "prev_segment_index": previous["index"],
+                "prev_segment_permalink": config_mod.permalink(
+                    self.cfg, self.state["channel"], previous["ts"]),
+                "raw_permalink": self.state.get("raw_permalink"),
+                "tree_permalink": self.state.get("tree_permalink"),
+            },
+            "entries": [],
+            "sealed": False,
+            "ts": None,
+        }

@@ -4,17 +4,12 @@ One entry for the whole install, not one per tree: the tick already walks every
 tracked project, and N crontab lines would mean N wakeups doing the same walk.
 """
 
-import subprocess
-
 MARKER = "# canopy"
 
 
 def _run(argv, stdin=""):
-    proc = subprocess.run(argv, input=stdin.encode("utf-8"),
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    return (proc.returncode,
-            proc.stdout.decode("utf-8", "replace"),
-            proc.stderr.decode("utf-8", "replace"))
+    from . import effects as effects_mod
+    return effects_mod.DEFAULT.run(argv, stdin=stdin)
 
 
 def line(tick_cmd, interval_minutes, data_home=None):

@@ -49,9 +49,13 @@ def cmd_track(args):
                                 reason=getattr(args, "reason", "") or "")
         print("%s -> %s%s" % (nid, result["status"], _cron_note(ctx)))
         return 0
-    result = ops.track(ctx, args.link, title=args.title, owner=args.owner,
-                       locale=args.locale, proj_id=args.project)
+    if args.project and ("/" in args.project or args.project.startswith(".")):
+        raise CanopyError("--project must be a plain name, not a path: %r"
+                          % (args.project,))
     if not args.no_cron:
+        # Before a single message is posted. Resolving afterwards produced
+        # exactly the state the design says to avoid: a tree that exists, three
+        # messages already in the channel, and no cron behind them.
         try:
             ctx.cfg = config_mod.set_values(
                 ctx.dh,
@@ -61,13 +65,17 @@ def cmd_track(args):
             )
         except CanopyError as exc:
             raise CanopyError(
-                "%s\nNo cron job was registered — a tree that looks watched but "
-                "never ticks is worse than a failed track." % (exc,))
+                "%s\nNothing was tracked — refusing to build a tree that has no "
+                "cron behind it." % (exc,))
+    result = ops.track(ctx, args.link, title=args.title, owner=args.owner,
+                       locale=args.locale, proj_id=args.project)
+    if not args.no_cron:
         schedule.sync(ctx.dh, ctx.cfg)
         # Same gate as cron: `--no-cron` means "set up the state, wire nothing
         # up", and that includes not leaving a viewer process behind.
-        viewer = webserve.start_background(ctx.dh, ctx.cfg, root=ctx.root)
-        _open(viewer["url"])
+        viewer = webserve.start_background(ctx.dh, ctx.cfg, root=ctx.root,
+                                          effects=ctx.effects)
+        _open(viewer["url"], ctx)
     print("tracked %s as `%s`" % (result["title"], result["proj_id"]))
     print("  feed     %s" % ctx.permalink(result["node_id"].split("-")[0],
                                           result["feed_ts"]))
@@ -77,17 +85,10 @@ def cmd_track(args):
     return 0
 
 
-def _open(path):
+def _open(url, ctx=None):
     """Open the ops page in whatever the desktop uses. Never fatal."""
-    import subprocess
-    for argv in (["open", str(path)], ["xdg-open", str(path)]):
-        try:
-            subprocess.run(argv, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, check=True)
-            return True
-        except (OSError, subprocess.CalledProcessError):
-            continue
-    return False
+    from . import effects as effects_mod
+    return (ctx.effects if ctx else effects_mod.DEFAULT).open_url(url)
 
 
 def cmd_serve(args):
@@ -105,17 +106,17 @@ def cmd_serve(args):
         return 0
     if args.background:
         viewer = webserve.start_background(ctx.dh, ctx.cfg, root=ctx.root,
-                                           port=args.port)
+                                           port=args.port, effects=ctx.effects)
         print(viewer["url"])
         if not args.no_open:
-            _open(viewer["url"])
+            _open(viewer["url"], ctx)
         return 0
 
     port = webserve.free_port(args.port or int(ctx.cfg.get("serve_port", 8787)))
     url = "http://127.0.0.1:%d/" % port
     print("serving %s  (Ctrl-C 停)" % url)
     if not args.no_open:
-        _open(url)
+        _open(url, ctx)
     try:
         webserve.serve(ctx.dh, ctx.cfg, root=ctx.root, port=port)
     except KeyboardInterrupt:
@@ -313,7 +314,12 @@ def cmd_rename(args):
 def cmd_recalibrate(args):
     ctx = _ctx(args)
     proj_id, nid = _resolve(ctx, args.ref)
-    result = worker.recalibrate(ctx, proj_id, nid)
+    from . import locks
+    # The tick can be inside this node right now; two rebuilds interleaving
+    # `chat.update` on the same messages is the exact thing the node lock is for.
+    with locks.held(ctx.node_dir(proj_id, nid),
+                    stale_after=int(ctx.cfg.get("lock_stale_seconds", 1800))):
+        result = worker.recalibrate(ctx, proj_id, nid)
     print("rebuilt %d checkpoints across %d segment(s)"
           % (result["checkpoints"], result["segments"]))
     return 0

@@ -10,18 +10,23 @@ import time
 from pathlib import Path
 
 from . import config as config_mod
+from . import effects as effects_mod
 from . import feed as feed_mod
-from . import noderef, paths, shortid, slack as slack_mod, store, templates
+from . import locks, noderef, paths, shortid, slack as slack_mod, store, templates
 from . import treemap as treemap_mod
 
 
 class Ctx(object):
-    def __init__(self, dh, cfg=None, slack=None, root=None, now=None):
+    def __init__(self, dh, cfg=None, slack=None, root=None, now=None,
+                 effects=None):
         self.dh = Path(dh)
         self.cfg = cfg if cfg is not None else config_mod.load(self.dh)
+        # Every touch of the machine goes through here; tests inject a
+        # Recording() that refuses to spawn. See effects.py for why.
+        self.effects = effects or effects_mod.DEFAULT
         self.slack = slack if slack is not None else slack_mod.Slack.from_config(
-            self.cfg)
-        self.root = root
+            self.cfg, effects=self.effects)
+        self.root = Path(root) if root else None
         self._now = now
 
     def now(self):
@@ -55,6 +60,41 @@ class Ctx(object):
 
     def permalink(self, channel, ts):
         return config_mod.permalink(self.cfg, channel, ts)
+
+
+class tree_lock(object):
+    """One writer per project.
+
+    `tree.json` is read whole, modified and written whole by `fork`,
+    `set_status`, `rename` and `sync_treemap` — and the CLI paths took no lock
+    at all. A cron tick handling `@canopy fork X` while someone typed
+    `canopy untrack 1.b` in a terminal produced a lost update: whichever wrote
+    last won, and the fork's edge vanished while its Slack messages and node
+    state stayed behind, unreachable.
+
+    Atomic writes do not help here; this is lost update, not torn file.
+    """
+
+    def __init__(self, ctx, proj_id):
+        self.dir = paths.project_dir(ctx.dh, proj_id)
+        self.stale = int(ctx.cfg.get("lock_stale_seconds", 1800))
+        self.held = None
+
+    def __enter__(self):
+        self.dir.mkdir(parents=True, exist_ok=True)
+        deadline = time.time() + 30
+        while True:
+            try:
+                self.held = locks.acquire(self.dir, stale_after=self.stale)
+                return self
+            except locks.LockedError:
+                if time.time() > deadline:
+                    raise
+                time.sleep(0.2)
+
+    def __exit__(self, *exc):
+        locks.release(self.dir)
+        return False
 
 
 def _date(ctx):
@@ -220,6 +260,11 @@ def track(ctx, link, title=None, owner=None, locale=None, proj_id=None,
 
 def fork(ctx, proj_id, parent_nid, title, agent=None):
     """Open a sub-problem: new thread, new feed, edge written now."""
+    with tree_lock(ctx, proj_id):
+        return _fork(ctx, proj_id, parent_nid, title, agent=agent)
+
+
+def _fork(ctx, proj_id, parent_nid, title, agent=None):
     tree = ctx.tree(proj_id)
     parent_state = store.load_state(ctx.dh, proj_id, parent_nid)
     channel = parent_state["channel"]
@@ -377,6 +422,11 @@ def ack_return(ctx, proj_id, nid, agent=None, summary=None):
 
 
 def set_status(ctx, proj_id, nid, status, reason="", agent=None):
+    with tree_lock(ctx, proj_id):
+        return _set_status(ctx, proj_id, nid, status, reason=reason, agent=agent)
+
+
+def _set_status(ctx, proj_id, nid, status, reason="", agent=None):
     tree = ctx.tree(proj_id)
     state = store.load_state(ctx.dh, proj_id, nid)
     tree.set_status(nid, status)
@@ -404,6 +454,11 @@ def set_status(ctx, proj_id, nid, status, reason="", agent=None):
 
 
 def rename(ctx, proj_id, nid, title):
+    with tree_lock(ctx, proj_id):
+        return _rename(ctx, proj_id, nid, title)
+
+
+def _rename(ctx, proj_id, nid, title):
     """Retitle a node everywhere it already got written.
 
     `track` derives a title from the thread's first line, which is a guess —

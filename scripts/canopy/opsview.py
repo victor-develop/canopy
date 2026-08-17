@@ -66,8 +66,8 @@ def _trees(dh):
                 "title": tree.node(nid).get("title") or nid,
                 "status": tree.node(nid).get("status", "active"),
                 "cursor": state.get("cursor"),
-                "checkpoints": len(
-                    (state.get("feed_ts") or [])) and _checkpoints(dh, proj_id, nid),
+                "checkpoints": (_checkpoints(dh, proj_id, nid)
+                                if state.get("feed_ts") else 0),
                 "raw_permalink": state.get("raw_permalink"),
             })
         out.append({"project": proj_id, "nodes": nodes})
@@ -113,8 +113,21 @@ def snapshot(dh, cfg, now=None, alive=None, run=None):
 def render(data, root=None):
     root = Path(root) if root else paths.skill_root()
     template = (root / "templates" / TEMPLATE).read_text(encoding="utf-8")
-    return template.replace(
-        "{{SNAPSHOT}}", json.dumps(data, ensure_ascii=False, sort_keys=True))
+    return template.replace("{{SNAPSHOT}}", embed(data))
+
+
+def embed(data):
+    """JSON for a `<script>` literal.
+
+    `json.dumps` does not escape `<`, `>` or `&`, and everything in this
+    snapshot came from Slack: a thread title of `</script><img src=x onerror=…>`
+    would close the script tag and run. The title is whatever the person who
+    opened the thread typed, so that is any workspace member.
+    """
+    return (json.dumps(data, ensure_ascii=False, sort_keys=True)
+            .replace("<", "\\u003c").replace(">", "\\u003e")
+            .replace("&", "\\u0026").replace("\u2028", "\\u2028")
+            .replace("\u2029", "\\u2029"))
 
 
 

@@ -13,9 +13,14 @@ from .errors import CanopyError, LockedError
 
 def gate(ctx, proj_id, nid, state, now=None, alive=None, agents=()):
     """-> (verdict, payload). Verdicts: 'no-new', 'locked', 'self-only', 'work'."""
-    latest = ctx.slack.latest_ts(state["channel"], state["thread_ts"],
-                                 after_ts=state.get("cursor"))
-    if float(latest) <= float(state.get("cursor") or state["thread_ts"]):
+    cursor = state.get("cursor") or state["thread_ts"]
+    # One read, not two: `latest_ts` used to pull the whole thread and then
+    # `new_messages` pulled it again, doubling the cost of the cheap gate.
+    fetched = ctx.slack.thread(state["channel"], state["thread_ts"],
+                               oldest=cursor)
+    messages = [m for m in fetched if float(m["ts"]) > float(cursor)]
+    latest = messages[-1]["ts"] if messages else cursor
+    if not messages:
         return "no-new", {"latest": latest}
 
     node_dir = ctx.node_dir(proj_id, nid)
@@ -23,16 +28,51 @@ def gate(ctx, proj_id, nid, state, now=None, alive=None, agents=()):
     if locks.is_held(node_dir, now=now, stale_after=stale, alive=alive):
         return "locked", {"latest": latest}
 
-    messages = ctx.slack.new_messages(state["channel"], state["thread_ts"],
-                                      state.get("cursor") or state["thread_ts"])
-    if not messages:
-        return "no-new", {"latest": latest}
-
     theirs = [m for m in messages if not mentions.is_own_post(m["text"], agents)]
     if not theirs:
         # Only Canopy's own replies arrived. Advance past them, spend nothing.
         return "self-only", {"cursor": messages[-1]["ts"]}
     return "work", {"messages": theirs, "cursor": messages[-1]["ts"]}
+
+
+MAX_RETRIES = 3
+
+
+def _advance(ctx, proj_id, state, cursor, outcome):
+    """Move the cursor — unless this batch failed, and not forever if it keeps.
+
+    A soft failure (Slack down, runner exited non-zero) used to advance anyway,
+    so those messages were never answered and nothing said so. Holding the
+    cursor fixes that, but holding it unconditionally replays the same poison
+    message every tick for the life of the tree. So: retry a few times, then
+    step over it and record that it was given up on.
+    """
+    failed = bool((outcome or {}).get("error")) or any(
+        step.get("error") for step in (outcome or {}).get("steps", []))
+    retries = dict(state.get("retries") or {})
+
+    if not failed:
+        state.pop("retries", None)
+        state["cursor"] = cursor
+        store.save_state(ctx.dh, proj_id, state)
+        return "advanced"
+
+    count = retries.get("count", 0) + 1 if retries.get("cursor") == cursor else 1
+    if count >= MAX_RETRIES:
+        state.pop("retries", None)
+        state["cursor"] = cursor
+        store.save_state(ctx.dh, proj_id, state)
+        events.append(ctx.dh, {
+            "kind": "worker", "ts": time.time(), "node": state["node_id"],
+            "project": proj_id, "mode": "give-up", "outcome": "skipped",
+            "error": "gave up after %d attempts: %s"
+                     % (count, (outcome or {}).get("error")),
+        })
+        return "gave-up"
+
+    state["retries"] = {"cursor": cursor, "count": count}
+    store.save_state(ctx.dh, proj_id, state)
+    return "retrying"
 
 
 def _outcome_word(outcome):
@@ -92,8 +132,12 @@ def tick(ctx, now=None, alive=None, handle=None, out_file=None, run=None):
             try:
                 with locks.held(node_dir, now=now, stale_after=stale, alive=alive):
                     started = time.time()
+                    # Without this the runner's own stdout — banner, token
+                    # counts, thinking — is what gets posted to Slack, and the
+                    # SKIP contract can never match.
+                    answer_file = out_file or (node_dir / "last-message.txt")
                     outcome = handle(ctx, proj_id, nid, messages, agents=agents,
-                                     out_file=out_file, run=run)
+                                     out_file=answer_file, run=run)
                     events.append(ctx.dh, {
                         "kind": "worker",
                         "ts": time.time(),
@@ -107,8 +151,7 @@ def tick(ctx, now=None, alive=None, handle=None, out_file=None, run=None):
                     })
                     # Re-read: a worker (or a fork) may have rewritten state.
                     state = store.load_state(ctx.dh, proj_id, nid)
-                    state["cursor"] = payload["cursor"]
-                    store.save_state(ctx.dh, proj_id, state)
+                    _advance(ctx, proj_id, state, payload["cursor"], outcome)
             except LockedError:
                 results.append({"project": proj_id, "node": nid,
                                 "verdict": "locked"})
