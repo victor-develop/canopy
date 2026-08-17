@@ -218,13 +218,14 @@ $ /canopy recalibrate 1        (或者在 thread 里:@canopy recalibrate)
 
 ```
 $ /canopy untrack 1            不再盯它,trace tree 里标 ×
-                               (cron 是全局一条,不跟着删;想重开就 track 1)
+                               整台机器没有活跃节点了,cron 条目也一起撤掉
+                               想重开:track 1(cron 自己装回来)
 ```
 
 ## 现状
 
 设计已冻结,`SKILL.md` 是唯一事实来源。`scripts/` 已经实现:Python 3、只用标准库(tick
-跑在 cron 里,少一个依赖就是一棵树悄悄不再被盯),`python3 -m pytest` 跑 150 个测试,
+跑在 cron 里,少一个依赖就是一棵树悄悄不再被盯),`python3 -m pytest` 跑 170 个测试,
 不连网、不连 Slack、不调模型。模块分工见
 [`scripts/README.md`](./scripts/README.md)。
 
