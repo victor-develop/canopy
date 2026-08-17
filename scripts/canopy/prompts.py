@@ -51,7 +51,7 @@ def _read(path):
 
 def node_block(state):
     keep = ("node_id", "title", "owner", "status", "alias", "raw_permalink",
-            "canvas_permalink")
+            "tree_permalink")
     slim = dict((k, state.get(k)) for k in keep if state.get(k) is not None)
     return json.dumps(slim, ensure_ascii=False, indent=2)
 

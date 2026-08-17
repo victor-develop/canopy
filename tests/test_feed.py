@@ -15,21 +15,24 @@ def test_append_updates_the_live_segment_in_place(ctx, slack, tracked):
     assert len(segments) == 1
     assert len(segments[0]["entries"]) == 2
     # Both checkpoints live in the ONE feed message an observer pinned.
-    assert all(u["ts"] == tracked["feed_ts"] for u in slack.updates)
+    feed_updates = [u for u in slack.updates if u["ts"] == tracked["feed_ts"]]
+    assert len(feed_updates) == 2
     assert "决定先加索引" in slack.text_of(tracked["feed_ts"])
 
 
-def test_entry_carries_the_raw_permalink(ctx, tracked):
+def test_an_entry_is_one_line_of_content(ctx, tracked):
+    """No author, no date, no per-entry link: the header links the thread, and
+    three pieces of provenance per line bury the one piece of content."""
     proj_id, nid = tracked["proj_id"], tracked["node_id"]
-    ops.append_checkpoint(ctx, proj_id, nid, "决定先加索引",
+    ops.append_checkpoint(ctx, proj_id, nid, "决定先加索引", author="E君",
                           raw_permalink="https://x/p1")
     text = entries_of(ctx, proj_id, nid)[0]["entries"][0]
-    assert "https://x/p1" in text
+    assert text == "• 决定先加索引"
 
 
 def test_full_segment_is_sealed_and_a_new_one_opens(ctx, slack, tracked):
     proj_id, nid = tracked["proj_id"], tracked["node_id"]
-    ctx.cfg["feed_segment_max_chars"] = 400
+    ctx.cfg["feed_segment_max_chars"] = 150
 
     for i in range(12):
         ops.append_checkpoint(ctx, proj_id, nid, "checkpoint 编号 %02d" % i)
@@ -48,7 +51,7 @@ def test_full_segment_is_sealed_and_a_new_one_opens(ctx, slack, tracked):
 
 def test_a_sealed_segment_is_never_edited_again(ctx, slack, tracked):
     proj_id, nid = tracked["proj_id"], tracked["node_id"]
-    ctx.cfg["feed_segment_max_chars"] = 400
+    ctx.cfg["feed_segment_max_chars"] = 150
     for i in range(12):
         ops.append_checkpoint(ctx, proj_id, nid, "checkpoint 编号 %02d" % i)
 
@@ -72,7 +75,7 @@ def test_one_oversized_entry_still_gets_posted(ctx, tracked):
 
 def test_recalibrate_rewrites_every_segment(ctx, slack, tracked):
     proj_id, nid = tracked["proj_id"], tracked["node_id"]
-    ctx.cfg["feed_segment_max_chars"] = 400
+    ctx.cfg["feed_segment_max_chars"] = 150
     for i in range(12):
         ops.append_checkpoint(ctx, proj_id, nid, "旧 checkpoint %02d" % i)
 

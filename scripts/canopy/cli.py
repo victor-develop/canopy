@@ -5,10 +5,10 @@ import json
 import sys
 from pathlib import Path
 
-from . import canvas as canvas_mod
 from . import config as config_mod
-from . import cron, noderef, ops, paths, runner as runner_mod
-from . import store, templates, tick as tick_mod, treeview, worker
+from . import cron, noderef, ops, paths, runner as runner_mod, schedule
+from . import store, templates, tick as tick_mod, treemap as treemap_mod
+from . import treeview, worker
 from .errors import CanopyError, NodeRefError
 
 
@@ -40,23 +40,33 @@ def _locked_nodes(ctx, proj_id, tree):
 
 def cmd_track(args):
     ctx = _ctx(args)
+    if "/archives/" not in args.link:
+        # `track <node ref>` re-opens a node someone parked. Same verb as
+        # adopting a fresh thread, because it is the same intent: watch this.
+        proj_id, nid = _resolve(ctx, args.link)
+        result = ops.set_status(ctx, proj_id, nid, "active",
+                                reason=getattr(args, "reason", "") or "")
+        print("%s -> %s%s" % (nid, result["status"], _cron_note(ctx)))
+        return 0
     result = ops.track(ctx, args.link, title=args.title, owner=args.owner,
                        locale=args.locale, proj_id=args.project)
     if not args.no_cron:
         try:
-            path = runner_mod.resolve_path(ctx.cfg.get("runner", "codex"))
-            config_mod.set_values(ctx.dh, runner_path=path)
+            ctx.cfg = config_mod.set_values(
+                ctx.dh,
+                runner_path=runner_mod.resolve_path(ctx.cfg.get("runner", "codex")),
+                slack_cli_path=runner_mod.resolve_path(
+                    ctx.cfg.get("slack_cli", "slackcli")),
+            )
         except CanopyError as exc:
             raise CanopyError(
                 "%s\nNo cron job was registered — a tree that looks watched but "
                 "never ticks is worse than a failed track." % (exc,))
-        tick_cmd = "%s %s tick" % (sys.executable, Path(__file__).resolve().parents[1] / "canopy_main.py")
-        cron.install(tick_cmd, ctx.cfg.get("cron_interval_minutes", 5),
-                     data_home=str(ctx.dh))
+        schedule.sync(ctx.dh, ctx.cfg)
     print("tracked %s as `%s`" % (result["title"], result["proj_id"]))
     print("  feed     %s" % ctx.permalink(result["node_id"].split("-")[0],
                                           result["feed_ts"]))
-    print("  canvas   %s" % result["canvas"])
+    print("  树消息   %s" % result["tree_permalink"])
     return 0
 
 
@@ -102,6 +112,21 @@ def cmd_messages(args):
     locale = args.locale or ctx.cfg.get("locale", "zh")
     paths.seed(ctx.dh, locale, root=ctx.root)
 
+    if args.refresh:
+        # Seeds are copied out once and then never touched again, so a skill
+        # update leaves the user reading their stale copy and wondering why the
+        # new wording never showed up. This re-copies the ones they never
+        # edited; anything they did edit is reported, not overwritten.
+        updated, kept = paths.refresh(ctx.dh, locale, root=ctx.root,
+                                      force=args.force)
+        for path in updated:
+            print("updated  %s" % path)
+        for path in kept:
+            print("kept     %s  (edited — use --force to overwrite)" % path)
+        if not updated and not kept:
+            print("already up to date")
+        return 0
+
     if args.name and args.preview:
         values = _preview_values(ctx, args)
         text = templates.render_named(args.name, values, ctx.dh, locale,
@@ -140,7 +165,7 @@ def _preview_values(ctx, args):
             "raw_permalink": state.get("raw_permalink"),
             "parent_permalink": state.get("raw_permalink"),
             "child_raw_permalink": state.get("raw_permalink"),
-            "canvas_permalink": canvas_mod.permalink(tree, ctx.dh),
+            "tree_permalink": treemap_mod.permalink(tree, ctx.cfg, nid) or "#tree",
             "feed_permalink": ctx.permalink(state["channel"], feed_ts) if feed_ts else "",
             "entries": "", "summary": "(summary)", "body": "(reply body)",
             "reason": "", "icon": "•", "author": "someone", "date": "2026-01-01",
@@ -152,7 +177,7 @@ def _preview_values(ctx, args):
         "alias": "1.a", "owner": "A君", "status": "active",
         "breadcrumb": "example / 1", "raw_permalink": "#raw",
         "parent_permalink": "#parent", "child_raw_permalink": "#child",
-        "canvas_permalink": "#canvas", "feed_permalink": "#feed",
+        "tree_permalink": "#tree", "feed_permalink": "#feed",
         "entries": "• 示例 checkpoint", "summary": "(summary)",
         "body": "(reply body)", "reason": "", "icon": "•", "author": "someone",
         "date": "2026-01-01", "segment_index": 2, "prev_segment_index": 1,
@@ -200,15 +225,8 @@ def cmd_status(args):
     return cmd_tree(args)
 
 
-def cmd_pause(args):
-    return _status_cmd(args, "paused")
-
-
-def cmd_resume(args):
-    return _status_cmd(args, "active")
-
-
 def cmd_untrack(args):
+    """Stop watching. Not final: `track <ref>` puts it back."""
     return _status_cmd(args, "untracked")
 
 
@@ -217,7 +235,25 @@ def _status_cmd(args, status):
     proj_id, nid = _resolve(ctx, args.ref)
     result = ops.set_status(ctx, proj_id, nid, status,
                             reason=getattr(args, "reason", "") or "")
-    print("%s -> %s" % (nid, result["status"]))
+    print("%s -> %s%s" % (nid, result["status"], _cron_note(ctx)))
+    return 0
+
+
+def _cron_note(ctx):
+    """Keep the cron entry in step with whether anything is still watched."""
+    outcome = schedule.sync(ctx.dh, ctx.cfg)
+    if outcome == schedule.REMOVED:
+        return "  (没有活跃节点了,cron 也撤了)"
+    if outcome == schedule.INSTALLED:
+        return "  (cron 装回来了)"
+    return ""
+
+
+def cmd_rename(args):
+    ctx = _ctx(args)
+    proj_id, nid = _resolve(ctx, args.ref)
+    result = ops.rename(ctx, proj_id, nid, args.title)
+    print("%s -> %s" % (nid, result["title"]))
     return 0
 
 
@@ -230,20 +266,22 @@ def cmd_recalibrate(args):
     return 0
 
 
-def cmd_canvas(args):
+def cmd_map(args):
+    """Re-post/refresh the tree message(s) and print where they are."""
     ctx = _ctx(args)
     trees = ctx.trees()
     if not trees:
         print("nothing tracked yet")
         return 0
-    if args.link:
-        proj_id, _nid = _resolve(ctx, args.ref or sorted(trees)[0])
-        canvas_mod.set_link(ctx.dh, proj_id, args.link)
-        trees = ctx.trees()
+    if args.ref:
+        proj_id, _nid = _resolve(ctx, args.ref)
+        trees = {proj_id: trees[proj_id]}
     for proj_id, tree in sorted(trees.items()):
-        path = ops._refresh_canvas(ctx, tree)
-        print("%-24s %s" % (proj_id, canvas_mod.permalink(tree, ctx.dh)))
-        print("%-24s %s" % ("", path))
+        segments = ops.sync_treemap(ctx, tree)
+        for seg in segments:
+            print("%-24s 第 %d 段  %s" % (proj_id, seg["index"],
+                                          treemap_mod.permalink(tree, ctx.cfg,
+                                                                seg["root"])))
     return 0
 
 
@@ -258,8 +296,26 @@ def cmd_reply(args):
 
 
 def cmd_tick(args):
+    """One tick. Always leaves a line in tick.log — including when it dies.
+
+    cron mails a traceback to a local mailbox nobody reads; the first real bug
+    here (slackcli missing from cron's PATH) sat in that mailbox through several
+    ticks. A log next to the state is where someone will actually look.
+    """
     ctx = _ctx(args)
-    results = tick_mod.tick(ctx)
+    try:
+        results = tick_mod.tick(ctx)
+        # An `@canopy untrack` typed in Slack can retire the last active node;
+        # the entry that just woke us should go with it.
+        schedule.sync(ctx.dh, ctx.cfg)
+    except Exception as exc:
+        _log_tick(ctx.dh, "ERROR %s: %s" % (type(exc).__name__, exc))
+        raise
+    summary = {}
+    for row in results:
+        summary[row.get("verdict")] = summary.get(row.get("verdict"), 0) + 1
+    _log_tick(ctx.dh, " ".join("%s=%d" % kv for kv in sorted(summary.items()))
+              or "nothing tracked")
     if args.json:
         print(json.dumps(results, ensure_ascii=False))
     else:
@@ -267,6 +323,13 @@ def cmd_tick(args):
             print("%-20s %-28s %s" % (row.get("project"), row.get("node"),
                                       row.get("verdict")))
     return 0
+
+
+def _log_tick(dh, message):
+    import time as _time
+    line = "%s %s\n" % (_time.strftime("%Y-%m-%d %H:%M:%S"), message)
+    with (Path(dh) / "tick.log").open("a", encoding="utf-8") as fh:
+        fh.write(line)
 
 
 def cmd_config(args):
@@ -302,8 +365,9 @@ def build_parser():
     parser.add_argument("--data-dir", help="override $CANOPY_DATA_HOME")
     sub = parser.add_subparsers(dest="cmd")
 
-    p = sub.add_parser("track", help="adopt a Slack thread")
-    p.add_argument("link")
+    p = sub.add_parser("track", help="adopt a Slack thread, or re-open a node")
+    p.add_argument("link", metavar="link|node")
+    p.add_argument("--reason", default="")
     p.add_argument("--title")
     p.add_argument("--owner")
     p.add_argument("--locale")
@@ -319,6 +383,10 @@ def build_parser():
     p = sub.add_parser("messages", help="review message templates")
     p.add_argument("name", nargs="?")
     p.add_argument("--preview", action="store_true")
+    p.add_argument("--refresh", action="store_true",
+                   help="re-copy shipped templates you have not edited")
+    p.add_argument("--force", action="store_true",
+                   help="with --refresh: overwrite edited ones too")
     p.add_argument("--node")
     p.add_argument("--project")
     p.add_argument("--locale")
@@ -330,21 +398,23 @@ def build_parser():
         p.add_argument("--depth")
         p.set_defaults(func=cmd_tree)
 
-    for name, func in (("pause", cmd_pause), ("resume", cmd_resume),
-                       ("untrack", cmd_untrack)):
-        p = sub.add_parser(name)
-        p.add_argument("ref")
-        p.add_argument("--reason", default="")
-        p.set_defaults(func=func)
+    p = sub.add_parser("untrack", help="stop watching a node (reversible)")
+    p.add_argument("ref")
+    p.add_argument("--reason", default="")
+    p.set_defaults(func=cmd_untrack)
+
+    p = sub.add_parser("rename", help="retitle a node (tree, state, feed headers)")
+    p.add_argument("ref")
+    p.add_argument("title")
+    p.set_defaults(func=cmd_rename)
 
     p = sub.add_parser("recalibrate", help="rebuild a node's feed")
     p.add_argument("ref")
     p.set_defaults(func=cmd_recalibrate)
 
-    p = sub.add_parser("canvas", help="re-render the Canvas")
+    p = sub.add_parser("map", help="refresh the tree message(s) in Slack")
     p.add_argument("ref", nargs="?")
-    p.add_argument("--link", help="store the Slack Canvas URL for this project")
-    p.set_defaults(func=cmd_canvas)
+    p.set_defaults(func=cmd_map)
 
     p = sub.add_parser("reply", help="post into a node's thread as an agent")
     p.add_argument("ref")

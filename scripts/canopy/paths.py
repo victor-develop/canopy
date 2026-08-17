@@ -90,3 +90,28 @@ def seed(dh, locale, root=None):
 
     projects_dir(dh).mkdir(parents=True, exist_ok=True)
     return created
+
+
+def refresh(dh, locale, root=None, force=False):
+    """Re-copy shipped message templates. -> (updated, kept).
+
+    A file whose content differs from *both* the shipped version and nothing
+    else is indistinguishable from an edit, so the rule is simple: identical
+    files are skipped, different ones are kept and reported unless `force`.
+    """
+    root = Path(root) if root else skill_root()
+    src_dir = root / "templates" / "messages" / locale
+    dst_dir = messages_dir(dh, locale)
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    updated, kept = [], []
+    for src in sorted(src_dir.glob("*.md")):
+        dst = dst_dir / src.name
+        shipped = src.read_text(encoding="utf-8")
+        if dst.exists() and dst.read_text(encoding="utf-8") == shipped:
+            continue
+        if dst.exists() and not force:
+            kept.append(dst)
+            continue
+        dst.write_text(shipped, encoding="utf-8")
+        updated.append(dst)
+    return updated, kept

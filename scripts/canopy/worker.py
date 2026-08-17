@@ -52,8 +52,12 @@ def run_command(ctx, proj_id, nid, detail, out_file=None):
     if cmd == "guide":
         ops.guide(ctx, proj_id, nid, arg or "", message_ts=msg.get("ts"))
         return {"command": cmd, "guide": arg}
-    if cmd == "done":
-        return dict(ops.set_status(ctx, proj_id, nid, "done", reason=arg or "",
+    if cmd == "untrack":
+        return dict(ops.set_status(ctx, proj_id, nid, "untracked",
+                                   reason=arg or "", agent=agent), command=cmd)
+    if cmd == "track":
+        # Re-open a node someone parked: `untrack` is not final, it is a toggle.
+        return dict(ops.set_status(ctx, proj_id, nid, "active", reason=arg or "",
                                    agent=agent), command=cmd)
     if cmd == "ack return":
         return dict(ops.ack_return(ctx, proj_id, nid, agent=agent), command=cmd)

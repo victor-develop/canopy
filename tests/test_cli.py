@@ -31,16 +31,16 @@ def test_track_registers_cron_and_prints_links(cli_env, capsys, monkeypatch):
     slack.add("C0PAY", "1699000001.000100", "1699000001.000100", "U1", "支付超时")
     installed = {}
     monkeypatch.setattr(cli.runner_mod, "resolve_path", lambda r: "/abs/codex")
-    monkeypatch.setattr(cli.cron, "install",
-                        lambda cmd, mins, data_home=None: installed.update(
-                            cmd=cmd, mins=mins))
+    monkeypatch.setattr(cli.schedule, "sync",
+                        lambda dh, cfg, **kw: installed.update(
+                            cmd=cli.schedule.tick_command(), synced=True))
 
     code = run(["track", "https://example.slack.com/archives/C0PAY/p1699000001000100",
                 "--title", "支付超时", "--project", "pay"])
     assert code == 0
     out = capsys.readouterr().out
     assert "tracked 支付超时 as `pay`" in out
-    assert installed["cmd"].endswith("canopy_main.py tick")
+    assert installed["synced"] and installed["cmd"].endswith("canopy_main.py tick")
     # The absolute runner path is what cron will actually be able to exec.
     assert config_mod.load(cli_env["dh"])["runner_path"] == "/abs/codex"
 
@@ -94,15 +94,23 @@ def test_tree_depth_zero_collapses(cli_env, capsys):
     assert "慢查询定位" not in capsys.readouterr().out
 
 
-def test_pause_resume_and_untrack(cli_env, capsys):
+def test_untrack_then_track_again(cli_env, capsys, monkeypatch):
+    """`untrack` is a toggle, not a tombstone — `track <ref>` puts it back."""
+    seen = []
+    monkeypatch.setattr(cli.schedule, "sync",
+                        lambda dh, cfg, **kw: seen.append(
+                            cli.schedule.has_active(dh)) or cli.schedule.UNCHANGED)
     track_one(cli_env)
-    run(["pause", "pay"])
-    ctx = cli._ctx(None)
-    assert ctx.tree("pay").node(ctx.tree("pay").root)["status"] == "paused"
-    run(["resume", "pay"])
-    assert cli._ctx(None).tree("pay").node(ctx.tree("pay").root)["status"] == "active"
-    run(["untrack", "pay", "--reason", "收了"])
-    assert cli._ctx(None).tree("pay").node(ctx.tree("pay").root)["status"] == "untracked"
+    root = cli._ctx(None).tree("pay").root
+
+    run(["untrack", "pay", "--reason", "先放着"])
+    assert cli._ctx(None).tree("pay").node(root)["status"] == "untracked"
+
+    run(["track", "pay"])
+    assert cli._ctx(None).tree("pay").node(root)["status"] == "active"
+    # The cron entry is kept in step by the same commands: nothing watched
+    # after untrack, something watched again after track.
+    assert seen[-2:] == [False, True]
 
 
 def test_ambiguous_ref_refuses_and_lists_candidates(cli_env, capsys):
@@ -110,7 +118,7 @@ def test_ambiguous_ref_refuses_and_lists_candidates(cli_env, capsys):
     track_one(cli_env, project="edd", channel="C0EDD", ts="1699000002.000100",
               title="EDD 不准")
     capsys.readouterr()
-    code = run(["pause", "1"])
+    code = run(["untrack", "1"])
     assert code == 1
     err = capsys.readouterr().err
     assert "pay:1" in err and "edd:1" in err
@@ -187,18 +195,18 @@ def test_config_set_and_show(cli_env, capsys):
     assert cfg["cron_interval_minutes"] == 10 and cfg["locale"] == "en"
 
 
-def test_canvas_stores_the_link(cli_env, capsys):
+def test_map_prints_the_tree_message_link(cli_env, capsys):
     track_one(cli_env)
     capsys.readouterr()
-    run(["canvas", "pay", "--link", "https://example.slack.com/canvas/F1"])
+    run(["map", "pay"])
     out = capsys.readouterr().out
-    assert "https://example.slack.com/canvas/F1" in out
+    assert "第 1 段" in out and "https://example.slack.com/archives/" in out
 
 
 def test_unknown_ref_exits_nonzero(cli_env, capsys):
     track_one(cli_env)
     capsys.readouterr()
-    assert run(["pause", "没有这个节点"]) == 1
+    assert run(["untrack", "没有这个节点"]) == 1
 
 
 def test_agents_on_a_fresh_install_seeds_and_lists(cli_env, capsys):
@@ -212,3 +220,24 @@ def test_messages_on_a_fresh_install_seeds(cli_env, capsys):
     run(["messages"])
     out = capsys.readouterr().out
     assert "feed-root.md" in out and "user" in out
+
+
+def test_tick_writes_a_log_line(cli_env, capsys):
+    track_one(cli_env)
+    run(["tick"])
+    log = (cli_env["dh"] / "tick.log").read_text(encoding="utf-8")
+    assert "no-new=1" in log
+
+
+def test_tick_logs_the_failure_too(cli_env, monkeypatch, capsys):
+    """The first real cron bug sat unread in a local mailbox for several ticks."""
+    track_one(cli_env)
+
+    def boom(*a, **k):
+        raise RuntimeError("slackcli missing")
+
+    monkeypatch.setattr(cli.tick_mod, "tick", boom)
+    with pytest.raises(RuntimeError):
+        run(["tick"])
+    log = (cli_env["dh"] / "tick.log").read_text(encoding="utf-8")
+    assert "ERROR RuntimeError: slackcli missing" in log

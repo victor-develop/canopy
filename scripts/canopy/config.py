@@ -10,8 +10,18 @@ DEFAULTS = {
     "runner": "codex",
     # Filled in by `track`: cron's PATH does not include mise/nvm/asdf shims.
     "runner_path": None,
+    # Same reason as runner_path: cron's PATH has neither of these.
+    "slack_cli": "slackcli",
+    # Upstream slackcli <= 0.8.0 escapes `<url|label>` on edit (it omits
+    # parse=none on chat.update). Set false once your slackcli carries that fix.
+    "slack_cli_escapes_on_edit": True,
+    "slack_cli_path": None,
     "slack_workspace_url": None,
+    "slack_backend": "slackcli",   # or "api", which needs $slack_token_env
     "slack_token_env": "CANOPY_SLACK_TOKEN",
+    "runner_timeout_seconds": 900,
+    "shortid_timeout_seconds": 90,
+    "stale_days": 3,
     "lock_stale_seconds": 1800,
     "feed_segment_max_chars": 3500,
 }

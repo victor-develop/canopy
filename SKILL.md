@@ -33,7 +33,7 @@ one level of thread. Three pains fall out:
 Canopy is a skill A君's local agent runs. It maintains the tree off to the side,
 watches each active node for new messages, dispatches `@agent` mentions to
 headless CLI workers (`codex exec` by default), keeps a curated checkpoint feed
-per node, and renders a clickable Canvas of the whole tree.
+per node, and keeps a clickable map of the whole tree posted in the channel.
 
 ## Core architecture: two-tier cron, nothing long-lived
 
@@ -134,6 +134,26 @@ with a different model than 1.b is a debugging problem nobody wants at 3am.
 Model choice inside a runner is that runner's own config (`~/.codex/config.toml`,
 `CLAUDE_*` env), which Canopy does not manage.
 
+## The Slack CLI it needs
+
+Canopy shells out to [`slackcli`](https://github.com/shaharia-lab/slackcli) for
+every Slack call. **Use 0.8.0-canopy.1 or later from
+[victor-develop/slackcli](https://github.com/victor-develop/slackcli/releases),
+or any upstream build that carries the `parse=none` fix**
+([upstream issue #106](https://github.com/shaharia-lab/slackcli/issues/106)).
+
+Upstream 0.8.0 calls `chat.update` without `parse=none`, so Slack escapes the
+text and `<url|label>` is stored as `&lt;url|label&gt;`. Every checkpoint
+appended to a feed edits that message, so on an unpatched CLI the feed's links
+all turn into literal text after the first checkpoint. Canopy does not crash on
+such a CLI — set `"slack_cli_escapes_on_edit": true` and it degrades labelled
+links to bare URLs, which stay clickable — but the labels are lost. With the
+fixed CLI, set it to `false` and keep them.
+
+The fork also carries the security hardening from `asdigitos/slackcli#1`
+(credential-bearing requests gated to slack.com hosts, terminal output
+sanitized, update downloads checksum-verified).
+
 ## Code / data separation — never write into the skill
 
 The skill is a git repo that gets installed by many people and PR'd back.
@@ -148,7 +168,6 @@ skill-root/                      # git, READ-ONLY at runtime, PR-able
     profiles/*.md                # seed profiles — canopy.md is the default agent
     messages/<locale>/*.md       # seed Slack message templates, per language (zh, en)
     default-summarizer.md        # default feed prompt
-    canvas.tmpl
 
 $CANOPY_DATA_HOME  (default ~/.canopy/)   # per-user, NOT in the repo
   config.json                    # cron interval, slack token ref, data path,
@@ -201,7 +220,7 @@ then may read the parent node's `transcript.jsonl`.
 
 ### Loop B — checkpoint feed
 Each node owns a `feed` — a checkpoint message posted **in the same channel** at
-`track`/`fork` time, linking the raw thread permalink and the Canvas. `feed_ts`
+`track`/`fork` time, linking the raw thread permalink and the tree map. `feed_ts`
 is an **array of segments** (see below). On each wake the summarizer reads
 `templates/default-summarizer.md` + the node's `guide.md` + new messages, decides
 for itself whether progress is "checkpoint-worthy," and if so `chat.update`s the
@@ -228,7 +247,7 @@ segmented per-tick update is the cheap common path.
 
 ## Message templates — every byte Canopy posts to Slack
 
-Observers never read `tree.json` or the Canvas source; they read the messages
+Observers never read `tree.json`; they read the messages
 Canopy posts. Those messages are the product, so **none of their wording is
 hardcoded**. Every posting moment renders a template, and every template is
 user-editable and PR-able.
@@ -246,7 +265,7 @@ user-editable and PR-able.
 | worker replies in-thread (Loop A) | `reply.md` | the node's thread |
 | `return` | `return-draft.md` | new message, for A君's review only |
 | `ack return` | `return-post.md` | the **parent** thread |
-| `done` / `pause` / `untrack` | `status-change.md` | the node's feed |
+| `untrack` / `track` again | `status-untracked.md` / `status-tracked.md` | the node's feed |
 
 `guide:` gets an emoji reaction, not a message — steering the summarizer should
 not add noise to the thread everyone is reading.
@@ -326,11 +345,17 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
 
 ### Local CLI — `/canopy <cmd>` (A君 → the agent)
 
-- `track <slackThreadLink> [--locale <l>]` — **main entrypoint.** Create the root
+- `track <slackThreadLink|node> [--locale <l>]` — **main entrypoint.** With a
+  link, create the root
   node + `tree.json`, post the root checkpoint message (linking raw thread +
-  Canvas), **announce into the raw thread itself** so the people already
+  tree map), **announce into the raw thread itself** so the people already
   discussing there learn it is watched and where to follow, register the cron
-  job, build the Canvas.
+  job, post the tree map.
+
+  The projId is not a slug of the title: `track` asks the runner for a short
+  semantic id (`figma-free-design`) because that id gets typed in every later
+  command, and falls back to the mechanical slug when the call fails. One small
+  model call, once per tree.
 
   The announce is not optional politeness: without it, a feed exists that the
   actual participants never hear about, and A君 ends up pasting the link by hand
@@ -360,7 +385,7 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
 
   How deep — `--depth`, counted from wherever you started:
   - `0` → starting node(s) only, each as a single rollup line: title, its
-    projId/alias, and counts of `active` / `paused` / `done` descendants plus how
+    projId/alias, and counts of `active` / `untracked` descendants plus how
     many currently hold a lock. **Default for the no-arg form** — a handful of
     roots, nothing expanded: the daily dashboard.
   - `N` → expand N levels; anything deeper collapses into a rollup on its
@@ -372,25 +397,46 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
   visibly truncated and you can re-run one level deeper. Deep trees are the
   normal case; the depth cap is what stops Canopy from re-creating the drowning
   problem it exists to solve.
-- `pause <node>` / `resume <node>` — stop / restart watching a node.
 - `recalibrate <node>` — CLI form of Loop C.
-- `canvas` — force-regenerate and print the Canvas link.
-- `untrack <node>` — archive the node, stop watching, grey it in the Canvas.
+- `map` — refresh the tree message(s) and print their links.
+- `untrack <node>` — archive the node, stop watching, grey it in the tree map.
 
 ### In-thread — `@<agent> <cmd>` (posted in Slack)
 
 - `fork <title>` — open a sub-problem. The **current thread_ts becomes parent**;
   add the edge to `tree.json`, post a new root checkpoint message in the same
-  channel (linking the parent message + Canvas), and reply in the parent thread
+  channel (linking the parent message + tree map), and reply in the parent thread
   pointing at the new thread. The edge is written at fork time — never inferred
   later.
 - `return` — draft a summary to a **new message** for A君 to review before it
   goes up.
 - `ack return` — confirm; post the summary back into the **parent thread** as
   `[$agentName]: …`, linking the child's feed permalink.
+
+  **Returning is optional and unrecorded.** It is a convenience for drafting
+  the summary, not a step in a lifecycle. Somebody who types the conclusion
+  into the parent thread themselves has closed the sub-problem just as well —
+  that is the natural thing to do, and the summarizer picks it up into the
+  parent's feed like any other message. So nothing waits on a return, nothing
+  displays whether one happened, and no state records it. State that only some
+  paths maintain is state that lies.
 - `guide: <text>` — append to this node's `guide.md`; effective next tick.
 - `recalibrate` — rebuild this node's feed (Loop C).
-- `done` — mark the node complete; tick it in the Canvas (pairs with `return`).
+- `untrack` — stop watching this node; `track` starts again.
+
+**The cron entry follows the tree, not the commands.** It exists exactly when at
+least one node anywhere is `active`: `track` puts it there, `untrack`-ing the
+last active node takes it away, and a tick that retires that node removes the
+entry that just woke it. Nobody should have to remember to install or remove it,
+and the two states you can otherwise reach are both bad — a tree that looks
+watched with no cron behind it, and a cron waking every five minutes to walk a
+tree where nothing is active.
+
+There is deliberately no `done`. A completion state needs a `reopen` to undo it,
+and then a rule for what "done" means while a child is still running. Watching
+is the only thing Canopy actually does, so watching is the only thing you
+toggle — and `untrack` reads as what it is, a decision to stop, not a claim that
+the problem is solved.
 
 ## State schemas
 
@@ -398,7 +444,8 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
 ```json
 {
   "root": "C123-1699.0001",
-  "canvas_id": "F0ABC",
+  "tree_msgs": [{"index": 1, "channel": "C123", "ts": "1699.0002",
+                 "root": "C123-1699.0001"}],
   "nodes": {
     "C123-1699.0001": {
       "parent": null,
@@ -429,25 +476,34 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
   "cursor": "1699.5000",
   "feed_ts": ["1699.0043", "1701.9000"],
   "raw_permalink": "https://.../p1699000042",
-  "canvas_permalink": "https://.../canvas",
+  "tree_permalink": "https://.../p1699000002",
   "reply_as": "arch"
 }
 ```
-`status`: `active` | `paused` | `done`. `feed_ts`: sealed segments first, last
+`status`: `active` | `untracked`. `feed_ts`: sealed segments first, last
 entry is the live one. `reply_as`: reply identity for this node — omit it and the
 node replies as `canopy`, the shipped default agent.
 
-## Canvas rendering
+## The tree map — the whole tree, as messages
 
-Whenever tree structure or a node's status changes, regenerate the Canvas from
-`templates/canvas.tmpl`: a clickable tree/graph where each node links its raw
-thread permalink and its feed message, and `done` nodes are ticked, `paused`/
-`untracked` greyed. This is A君's fast navigation surface across the whole tree.
+A君's navigation surface is a message in the same channel, updated in place
+whenever structure or status changes: every node as a row with its alias, title,
+A row is four things: the depth bullet, the alias, the title, and the two links
+you click — the update feed and the raw thread. `untracked` rows keep their
+place with a `×`. Nothing else: owner, checkpoint counts, "returned", "quiet
+since" were each tried and cut. The map is scanned, not read, and every extra
+token pushes the next row's links further right.
 
-`slackcli` can read canvases but not write one, so Canopy renders the file
-(`projects/<projId>/canvas.md`) and uses it as the link target until you paste
-the real Canvas URL in with `canopy canvas --link <url>`; from then on every
-message that carries `canvas_permalink` points at the Canvas.
+**Not a Slack Canvas.** `slackcli` can read canvases but not write one, and a
+Canvas link that only opens on the machine that rendered it is worse than no
+link — so the map is an ordinary message anyone in the channel can click.
+
+**Segmented every 4 levels.** One message can't hold a deep tree. A node at the
+cut line stops being a row and becomes a pointer into the message that continues
+from it; that message links back to the one above. The tree stays walkable by
+clicking, which is the only reason to have a map at all. `tree_msgs` in
+`tree.json` records each segment's ts, and `tree_permalink` on a node points at
+the segment its row actually lives in — not always segment 1.
 
 ## Implementation
 
@@ -455,7 +511,7 @@ message that carries `canvas_permalink` points at the Canvas.
 tests. `scripts/README.md` maps module to responsibility. Two rules there are
 design decisions, not implementation details:
 
-- **Structural commands never reach the model.** `fork`, `done`, `guide:`,
+- **Structural commands never reach the model.** `fork`, `untrack`, `guide:`,
   `return`, `ack return` are parsed from the message and executed as code. A
   fork writes an edge into `tree.json`; a hallucinated edge is a corrupted tree
   nobody notices for a week. The model is asked for replies and summaries only.

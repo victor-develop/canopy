@@ -22,7 +22,8 @@ def test_node_id_roundtrip():
 
 def test_slugify_makes_a_human_project_id():
     assert store.slugify("Pay timeout / EDD!!") == "pay-timeout-edd"
-    assert store.slugify("支付超时") == "tree"          # falls back, never empty
+    assert store.slugify("支付超时") == "支付超时"      # unicode survives
+    assert store.slugify("///") == "tree"              # never empty
 
 
 def test_tree_edges_and_walks():

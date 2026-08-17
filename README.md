@@ -16,12 +16,13 @@ Slack 里的活是按树长的。A君在一个 thread 里聊问题 1,聊到一�
    能横着看全树的界面。
 
 Canopy 把这棵树维护在旁边:盯每个活跃节点的新消息,消息里 `@` 了 agent 就派一个无头
-CLI worker 去处理,给每个节点维护一条 checkpoint feed,再把整棵树渲染成可点的 Canvas。
+CLI worker 去处理,给每个节点维护一条 checkpoint feed,再在频道里维护一条可点的
+树消息。
 
 ### 一个人用也成立
 
 树里不一定要有别人。把 Slack 当自己的工作台:一条 thread 一个问题,想到的子问题
-`@canopy fork` 出去各自成 thread,feed 就是这条线的进度条,Canvas 是回来接着干时的
+`@canopy fork` 出去各自成 thread,feed 就是这条线的进度条,树消息是回来接着干时的
 入口。
 
 区别只在旁观者是谁 —— 团队场景里是等结论的人,个人场景里是三天后的自己。同时压着五六
@@ -64,13 +65,27 @@ worker 就既发不出 Slack 也推不动自己的 `cursor`,而且不报错。�
 完整设计看 [`SKILL.md`](./SKILL.md):三个 loop、两层 cron、runner、代码与数据分离、
 命令集、状态 schema。
 
+## 依赖的 slackcli 版本
+
+所有 Slack 调用都走 [`slackcli`](https://github.com/shaharia-lab/slackcli)。
+请用 [victor-develop/slackcli](https://github.com/victor-develop/slackcli/releases)
+的 **0.8.0-canopy.1** 或更新版本,或任何带了 `parse=none` 修复的上游版本
+([上游 issue #106](https://github.com/shaharia-lab/slackcli/issues/106))。
+
+上游 0.8.0 调 `chat.update` 时没传 `parse=none`,Slack 会把文本转义,
+`<url|label>` 存成 `&lt;url|label&gt;`。feed 每追一条 checkpoint 就编辑一次那条
+消息,所以在没打补丁的 CLI 上,第一条 checkpoint 之后 feed 里的链接全变成字面文字。
+canopy 不会因此崩:把 `slack_cli_escapes_on_edit` 设成 `true`,它会把带标签的链接
+降级成裸 URL(还能点,但标签没了)。用修好的 CLI 就设成 `false`。
+
 ## 命令
 
 本地 CLI(`/canopy …`):`track`、`agents`、`messages`、`tree`/`status`、
-`pause`/`resume`、`recalibrate`、`canvas`、`untrack`。
+`recalibrate`、`map`、`untrack`。
 
 Thread 里(`@<agent> …`):`fork`、`return`、`ack return`、`guide:`、`recalibrate`、
-`done`。
+`untrack`。没有 `done` —— 完成态要配 reopen,还要定义「子节点还在跑算不算完成」。
+Canopy 只做一件事:盯。所以只切换盯不盯。
 
 ## 完整流程:一个问题从盯到收
 
@@ -101,11 +116,12 @@ $ /canopy track https://…/archives/C0PAY/p1699000001     # locale 默认 zh
 
   #pay ────────────────────────────────────────────────────────────────
    🧵 1699.0001  “支付超时”                    原始讨论,一个字不动
-      └ [canopy] 我开始盯这条 thread 了…        track-announce.md
-   📌 1699.0002  🌳 支付超时 · `1`               feed-root.md
-   🗂  Canvas “pay-timeout”                      canvas.tmpl
+      └ [canopy]: 正在[跟踪]对话并进行 [智能总结]  track-announce.md
+   📌 1699.0002  <支付超时> update feed:         feed-root.md
+   🗺 1699.0003  <支付超时> trace tree · `pay-timeout`  tree-map.md
   ──────────────────────────────────────────────────────────────────────
    + 注册 cron          + ~/.canopy/projects/pay-timeout/tree.json
+   projId 是 agent 起的语义化 short-id,不是标题的 slug
 ```
 
 往 thread 里 announce 这一步不是客套:少了它,feed 建起来了,但正在那条 thread 里吵的人
@@ -126,7 +142,7 @@ cron ──► 遍历每个 active 节点
            └ 新消息里 @ 了 agent ?
                 ├ 否 ──────► 轻量 summarizer ──► 够格就往当前 feed 段
                 │                                追一条 feed-entry.md
-                ├ 是,且是命令 ► 直接跑代码 ──► fork / done / guide: …
+                ├ 是,且是命令 ► 直接跑代码 ──► fork / untrack / guide: …
                 │                                (结构性改动不经过模型)
                 └ 是,是问句 ─► 完整 worker ──► 在 thread 里回 reply.md
                                                  推进 cursor,释放 lock
@@ -147,9 +163,9 @@ cron ──► 遍历每个 active 节点
 
   #pay ────────────────────────────────────────────────────────────────
    🧵 1699.0001  “支付超时”
-      └ [canopy] 拆出 `1.a` — 慢查询定位 …      fork-announce.md
+      └ [canopy]: 拆出 `1.a` [慢查询定位]…      fork-announce.md
    🧵 1701.0500  “慢查询定位”                    新 thread,E/F 在这儿聊
-   📌 1701.0501  🌳 慢查询定位 · `1.a`            feed-fork.md
+   📌 1701.0501  <慢查询定位> update feed:      feed-fork.md
   ──────────────────────────────────────────────────────────────────────
    tree.json: 1 ──► 1.a          边是 fork 当场写下的,不靠事后推断
 ```
@@ -160,34 +176,40 @@ cron ──► 遍历每个 active 节点
 
 ```
 $ /canopy tree                       不带参数 → 所有根,depth 0
-  pay-timeout  支付超时     active   4 active / 1 paused / 2 done   🔒1
+  pay-timeout  支付超时     active   4 active / 2 untracked   🔒1
 
 $ /canopy tree pay-timeout           点名一个根 → depth all
-  1        支付超时         active   A君
-  ├ 1.a    慢查询定位       active   E君    回话身份 @arch
-  │ └ 1.a.i  索引方案       active   F君    🔒 worker 正在跑
-  └ 1.b    重试风暴         paused   A君
+  1        支付超时         active     A君
+  ├ 1.a    慢查询定位       active     E君
+  │ └ 1.a.i  索引方案       active     F君    🔒 worker 正在跑
+  └ 1.b    重试风暴         untracked  A君
 
 $ /canopy tree 1.a --depth 1         从哪儿开始、往下几层,是两个独立参数
   ↑ pay-timeout / 1                  面包屑,免得看丢位置
-  1.a      慢查询定位       active   E君    回话身份 @arch
-  └ 1.a.i  索引方案         active   F君    ▸ 2 done
+  1.a      慢查询定位       active   E君
+  └ 1.a.i  索引方案         active   F君    ▸ 2 untracked
 
-$ /canopy pause 1.b                  不盯了,feed 留着
-$ /canopy resume 1.b
-$ /canopy canvas                     重新渲染,打印链接
+$ /canopy untrack 1.b                不盯了,feed 留着,树上标 ×
+$ /canopy track 1.b                  重新盯上
+                                     最后一个活跃节点被 untrack 时,cron 自己撤掉
+$ /canopy map                        重刷树消息,打印链接
 ```
 
-### 6 · `return` / `ack return` / `done`:结论回灌给上一层
+### 6 · `return` / `ack return`:结论回灌给上一层
 
 ```
 🧵 1.a  @canopy return         草稿发成一条新消息,只给 A君 看
         @canopy ack return ──► 发进 🧵 1                  return-post.md
-        @canopy done       ──► 1.a 的 feed 里发 status-change.md
-                               Canvas 上打勾
+        @canopy untrack    ──► 1.a 的 feed 里发 status-untracked.md
+                               trace tree 里标 ×
 ```
 
 A君没点头之前,什么都不会进父 thread。
+
+`return` 是可选的,而且不留痕。它只是帮你起草那段结论 —— 人自己在父 thread 里把结论
+说了,子问题一样算收,而且那才是最自然的做法,summarizer 会像对待任何消息一样把它
+记进父节点的 feed。所以没有任何东西等着 return 发生,也没有任何地方显示「这个节点
+return 过没有」。只有部分路径维护的状态,是会骗人的状态。
 
 ### 7 · feed 记歪了:`recalibrate`
 
@@ -200,20 +222,21 @@ $ /canopy recalibrate 1        (或者在 thread 里:@canopy recalibrate)
 ### 8 · `untrack`:收树
 
 ```
-$ /canopy untrack 1            归档、不再盯它、Canvas 上置灰
-                               (cron 是全局一条,不跟着删)
+$ /canopy untrack 1            不再盯它,trace tree 里标 ×
+                               整台机器没有活跃节点了,cron 条目也一起撤掉
+                               想重开:track 1(cron 自己装回来)
 ```
 
 ## 现状
 
 设计已冻结,`SKILL.md` 是唯一事实来源。`scripts/` 已经实现:Python 3、只用标准库(tick
-跑在 cron 里,少一个依赖就是一棵树悄悄不再被盯),`python3 -m pytest` 跑 130+ 个测试,
+跑在 cron 里,少一个依赖就是一棵树悄悄不再被盯),`python3 -m pytest` 跑 170 个测试,
 不连网、不连 Slack、不调模型。模块分工见
 [`scripts/README.md`](./scripts/README.md)。
 
-还没做的:Slack Canvas 只能读不能写(`slackcli` 没这个命令),所以 Canvas 先渲染成
-`projects/<projId>/canvas.md`,把真实 Canvas 链接用 `canopy canvas --link <url>`
-存进来之后,消息里的 `canvas_permalink` 才指向 Slack。
+整棵树的导航面**不是** Slack Canvas —— `slackcli` 只能读 canvas 不能写,而一条只有
+渲染它那台机器打得开的链接不如没有。所以是频道里的一条普通消息,原地更新;树深了就
+每 4 层切一条新消息,切口那个节点在上一条里变成指针,新消息回指上一条,整棵树点得动。
 
 ## License
 

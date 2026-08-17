@@ -74,6 +74,14 @@ class FakeSlack(object):
         return None
 
 
+@pytest.fixture(autouse=True)
+def no_real_runner(monkeypatch):
+    """No test may spawn a real codex/claude: it would hang or cost money."""
+    def refuse(*args, **kwargs):
+        raise AssertionError("a test tried to spawn the real runner")
+    monkeypatch.setattr("canopy.runner._run", refuse)
+
+
 @pytest.fixture
 def repo():
     return REPO
@@ -106,5 +114,6 @@ def tracked(ctx, slack):
     channel, ts = "C0PAY", "1699000001.000100"
     slack.add(channel, ts, ts, "U1", "支付超时,大家看下")
     link = "https://example.slack.com/archives/%s/p1699000001000100" % channel
-    result = ops.track(ctx, link, owner="A君")
+    result = ops.track(ctx, link, owner="A君",
+                       namer=lambda *a, **k: "pay-timeout")
     return result

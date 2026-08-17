@@ -14,6 +14,7 @@ from .errors import RenderError
 
 VAR_RE = re.compile(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}")
 FRONT_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n?", re.DOTALL)
+EMPTY_LINK_RE = re.compile(r"<\|([^>\n]*)>")
 
 # Resolution layers, first hit wins.
 LAYER_PROJECT = "project"
@@ -82,6 +83,9 @@ def render(text, values):
         return "" if value is None else str(value)
 
     out = VAR_RE.sub(sub, body)
+    # A link whose URL came out empty would post as `<|label>`, which Slack
+    # renders verbatim. Degrade it to the label rather than showing markup.
+    out = EMPTY_LINK_RE.sub(lambda m: m.group(1), out)
     # An empty variable leaves the space that preceded it; trim per line so a
     # blank `reason` doesn't post as a trailing space.
     return "\n".join(line.rstrip() for line in out.split("\n")).strip("\n")

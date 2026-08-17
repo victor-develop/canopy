@@ -74,3 +74,56 @@ def test_nonzero_exit_raises_with_stderr(tmp_path):
         runner.run({"runner": "claude"}, "P", tmp_path,
                    exec_fn=lambda a, p, c: (1, "", "boom"))
     assert "boom" in str(exc.value)
+
+
+# -- the project's short id ---------------------------------------------------
+
+def test_shortid_accepts_a_clean_answer():
+    from canopy import shortid
+    assert shortid.sanitize("figma-free-design") == "figma-free-design"
+
+
+def test_shortid_strips_what_models_add():
+    from canopy import shortid
+    assert shortid.sanitize("Here you go:\n`Figma-Free Design`\n") == \
+        "figma-free-design"
+
+
+def test_shortid_rejects_prose_and_falls_back():
+    from canopy import shortid
+    assert shortid.sanitize("I think a good name would be something like this") is None
+    assert shortid.sanitize("") is None
+    assert shortid.sanitize("---") is None
+
+
+def test_shortid_returns_none_when_the_runner_fails(tmp_path):
+    from canopy import shortid
+    from canopy.errors import RunnerError
+
+    def boom(*a, **k):
+        raise RunnerError("codex not installed")
+
+    assert shortid.suggest({}, "支付超时", tmp_path, run=boom) is None
+
+
+def test_track_uses_the_suggested_id(ctx, slack):
+    from canopy import ops
+    channel, ts = "C0NEW", "1699000900.000100"
+    slack.add(channel, ts, ts, "U1", "设计师不用 Figma 的方案")
+    link = "https://example.slack.com/archives/%s/p1699000900000100" % channel
+    result = ops.track(ctx, link, namer=lambda *a, **k: "figma-free-design")
+    assert result["proj_id"] == "figma-free-design"
+
+
+def test_track_falls_back_to_the_slug_when_the_namer_fails(ctx, slack):
+    from canopy import ops
+    from canopy.errors import RunnerError
+
+    def boom(*a, **k):
+        raise RunnerError("no runner")
+
+    channel, ts = "C0NEW", "1699000900.000100"
+    slack.add(channel, ts, ts, "U1", "支付超时")
+    link = "https://example.slack.com/archives/%s/p1699000900000100" % channel
+    result = ops.track(ctx, link, title="支付超时", namer=boom)
+    assert result["proj_id"] == "支付超时"
