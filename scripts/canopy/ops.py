@@ -282,6 +282,7 @@ def fork(ctx, proj_id, parent_nid, title, agent=None):
         "title": title,
         "child_raw_permalink": child_state["raw_permalink"],
         "feed_permalink": ctx.permalink(channel, feed_ts),
+        "tree_permalink": tree_link,
     }, tree=tree, proj_id=proj_id)
     ctx.slack.post(channel, announce, thread_ts=parent_state["thread_ts"])
 

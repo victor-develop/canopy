@@ -1,5 +1,5 @@
 ---
 moment: fork_announce
-vars: [agent, alias, title, child_raw_permalink, feed_permalink]
+vars: [agent, alias, title, child_raw_permalink, feed_permalink, tree_permalink]
 ---
-[{{agent}}]: split off `{{alias}}` [<{{child_raw_permalink}}|{{title}}>], progress in [<{{feed_permalink}}|its digest>]
+[{{agent}}]: split off [<{{child_raw_permalink}}|{{title}}>], [<{{tree_permalink}}|tracking>] it and [<{{feed_permalink}}|digesting here>]

@@ -196,8 +196,9 @@ def test_the_child_thread_gets_a_link_to_its_own_feed(ctx, slack, tracked):
     kickoff = slack.text_of(result["thread_ts"])
     feed_url = ctx.permalink("C0PAY", result["feed_ts"])
     assert "|智能总结>" in kickoff and feed_url in kickoff
-    # And it still points up and out.
-    assert "|上游>" in kickoff and "|trace tree>" in kickoff
+    # And it still points up and out — every canopy message uses the same
+    # skeleton: 正在[跟踪]对话并进行 [智能总结].
+    assert "|上游>" in kickoff and "|跟踪>" in kickoff
 
 
 def test_the_kickoff_is_readable_before_the_feed_exists(ctx, slack, tracked):
