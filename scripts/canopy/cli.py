@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -62,9 +63,12 @@ def cmd_track(args):
                 runner_path=runner_mod.resolve_path(ctx.cfg.get("runner", "codex")),
                 slack_cli_path=runner_mod.resolve_path(
                     ctx.cfg.get("slack_cli", "slackcli")),
+                cron_login_shell=(ctx.cfg.get("cron_login_shell")
+                                  or os.environ.get("SHELL") or None),
             )
-            # And prove it starts, not just that the file is there.
-            runner_mod.probe(ctx.cfg, effects=ctx.effects)
+            # And prove it can do the job in cron's environment, not just that
+            # the file is there and starts in yours.
+            runner_mod.probe(ctx.cfg, cwd=ctx.dh, effects=ctx.effects)
         except CanopyError as exc:
             raise CanopyError(
                 "%s\nNothing was tracked — refusing to build a tree that has no "

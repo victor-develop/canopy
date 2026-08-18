@@ -10,6 +10,10 @@ DEFAULTS = {
     "runner": "codex",
     # Filled in by `track`: cron's PATH does not include mise/nvm/asdf shims.
     "runner_path": None,
+    # Also filled in by `track`, from $SHELL. The tick runs inside this shell as
+    # a login shell so it inherits the profile your runner's auth lives in — see
+    # cron.line. Set it to null if your runner needs nothing from a profile.
+    "cron_login_shell": None,
     # Same reason as runner_path: cron's PATH has neither of these.
     "slack_cli": "slackcli",
     # Upstream slackcli <= 0.8.0 escapes `<url|label>` on edit (it omits

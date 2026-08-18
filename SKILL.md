@@ -405,12 +405,27 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
   every row. When the call fails, the fallback drops the opener and cuts at
   punctuation instead of at a character count. `canopy rename` fixes either.
 
-  **Prove the runner starts, do not just find it.** `resolve_path` only shows a
-  file exists. `codex` is a node script whose shebang runs `env node`, and cron's
-  PATH has no node — so every worker died with `exit 127` while the same command
-  worked in a shell. `track` now runs `<runner> --version` first, and every
-  runner call gets the binary's own directory prepended to PATH (a version
-  manager keeps the interpreter next to the tool).
+  **Prove the runner can do the job, not just that it starts.** The same lesson
+  has now been learned three times, each a layer deeper. `resolve_path` proved a
+  file existed — and workers died with `exit 127: env: node: No such file or
+  directory`, because `codex` is a node script whose shebang runs `env node` and
+  cron's PATH has no node. `<runner> --version` proved the binary started — and
+  workers died two seconds in with `ERROR: Missing environment variable:
+  AM_API_KEY`, because `--version` needs no credentials and `track` runs from a
+  terminal where the variable is already exported.
+
+  The environment is the thing cron does not give you. `codex` reads its
+  provider key from an env var (`env_key` in `~/.codex/config.toml`) that a
+  shell profile exports, and cron starts no shell and reads no profile. So the
+  crontab line wraps the tick in a **login shell** (`$SHELL -lc '…'`, captured
+  into `cron_login_shell` at `track` time; set it to null if your runner needs
+  nothing from a profile). Nothing is copied into the crontab or into
+  `config.json` — no credential ends up at rest anywhere new.
+
+  And `probe` now asks the runner for a real, tiny answer, in a **stripped
+  environment**, through that same login shell. It costs a few thousand tokens
+  once per tree, and it turns "every tick fails silently for a week" into
+  "`track` refuses, and says which variable is missing".
 
   The announce is not optional politeness: without it, a feed exists that the
   actual participants never hear about, and A君 ends up pasting the link by hand

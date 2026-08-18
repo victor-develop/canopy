@@ -116,6 +116,42 @@ def test_empty_crontab_exit_code_is_not_an_error():
     assert cron.read_crontab(run=run) == ""
 
 
+def test_the_tick_runs_inside_a_login_shell():
+    """cron reads no profile, so the environment a runner's auth lives in is not
+    there. `codex` reads its provider key from an env var a profile exports:
+    from a terminal it worked, from cron every worker died two seconds in."""
+    got = cron.line("/bin/python3 /skill/canopy_main.py tick", 1,
+                    data_home="/data", login_shell="/bin/zsh")
+    assert got.startswith("*/1 * * * * /bin/zsh -lc ")
+    assert "CANOPY_DATA_HOME=/data /bin/python3 /skill/canopy_main.py tick" in got
+    assert got.endswith("# canopy")
+
+
+def test_the_command_is_quoted_as_one_argument():
+    got = cron.line("/bin/tick", 5, data_home="/data", login_shell="/bin/zsh")
+    inner = got.split("-lc ", 1)[1].rsplit(" # canopy", 1)[0]
+    assert inner.startswith("'") and inner.endswith("'")
+
+
+def test_no_login_shell_leaves_the_bare_command():
+    """A runner that needs nothing from a profile should not pay for a shell."""
+    got = cron.line("/bin/tick", 5, data_home="/data")
+    assert got == "*/5 * * * * CANOPY_DATA_HOME=/data /bin/tick # canopy"
+
+
+def test_a_percent_in_the_command_is_escaped():
+    """crontab reads an unescaped % as a newline and feeds the rest to stdin."""
+    got = cron.line("/bin/tick", 5, data_home="/data/100%done")
+    assert "100\\%done" in got and "100%done" not in got
+
+
+def test_install_carries_the_login_shell_through():
+    run, _ = recorder([(0, ""), (0, "")])
+    payload = cron.install("/bin/tick", 5, data_home="/data",
+                           login_shell="/bin/bash", run=run)
+    assert "/bin/bash -lc " in payload
+
+
 # -- link degradation and the API backend -------------------------------------
 
 def test_slackcli_edits_lose_rich_links_so_they_degrade():
