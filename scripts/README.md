@@ -29,7 +29,7 @@ profile having run.
 | `treeview.py` | `tree` output: start point × `--depth`, rollups, breadcrumb |
 | `slack.py` | the only place that talks to Slack, via `slackcli` as a subprocess |
 | `treemap.py` | the tree message: rows, depth segmentation, which segment holds a node |
-| `shortid.py` | asking the runner for the project's short semantic id |
+| `shortid.py` | asking the runner for the project's short id and headline, and the fallback shortener |
 | `store.py` | `tree.json` / `state.json`, atomic writes |
 | `locks.py` | one lock file per node, staleness and dead-pid handling |
 | `prompts.py` | what a worker is actually told |
@@ -92,7 +92,7 @@ passing a handler that raises if it is ever called.
 
 ## Tests
 
-`python3 -m pytest` — 218 tests, no network, no Slack, no model. The fake
+`python3 -m pytest` — 231 tests, no network, no Slack, no model. The fake
 Slack in `tests/conftest.py` records every post, edit, and reaction, so tests
 assert on the exact text that would have hit the channel. An autouse fixture
 installs `effects.Recording()`, which refuses to spawn and raises an

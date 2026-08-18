@@ -63,6 +63,8 @@ def cmd_track(args):
                 slack_cli_path=runner_mod.resolve_path(
                     ctx.cfg.get("slack_cli", "slackcli")),
             )
+            # And prove it starts, not just that the file is there.
+            runner_mod.probe(ctx.cfg, effects=ctx.effects)
         except CanopyError as exc:
             raise CanopyError(
                 "%s\nNothing was tracked — refusing to build a tree that has no "

@@ -9,6 +9,7 @@ same reach over this machine as the person who installed Canopy. Put your own
 boundary — that is what the escape hatch is for.
 """
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -16,12 +17,33 @@ from pathlib import Path
 from .errors import RunnerError
 
 
+def runner_env(argv, base=None):
+    """The environment a runner needs, not the one cron happens to give us.
+
+    Resolving `codex` to an absolute path is not enough: it is a node script
+    whose shebang is `#!/usr/bin/env node`, and cron's PATH has no node. Every
+    worker died with `exit 127: env: node: No such file or directory` — from a
+    terminal everything worked, from cron nothing ever did.
+
+    A version manager keeps the interpreter next to the tool, so putting the
+    binary's own directory first is exactly the missing piece.
+    """
+    env = dict(os.environ if base is None else base)
+    binary = Path(argv[0])
+    if binary.is_absolute():
+        # No existence check: prepending a directory that isn't there costs
+        # nothing, and skipping the fix when it *is* there is the bug.
+        env["PATH"] = "%s:%s" % (binary.parent, env.get("PATH", ""))
+    return env
+
+
 def _run(argv, prompt, cwd, timeout=None, effects=None):
     """A hung worker holds its node's lock, so every run is time-boxed."""
     from . import effects as effects_mod
     try:
         return (effects or effects_mod.DEFAULT).run(
-            argv, stdin=prompt, timeout=timeout, cwd=cwd)
+            argv, stdin=prompt, timeout=timeout, cwd=cwd,
+            env=runner_env(argv))
     except subprocess.TimeoutExpired:
         raise RunnerError("runner did not finish within %ss: %s"
                           % (timeout, " ".join(argv)))
@@ -41,6 +63,29 @@ def resolve_path(runner, which=None):
             "or set runner_path in config.json to an absolute path." % (name,)
         )
     return found
+
+
+def probe(cfg, effects=None):
+    """Actually start the runner once. -> its version string.
+
+    `command -v` only proves a file exists. This catches the interpreter being
+    missing, a half-installed binary, a quarantined download — before `track`
+    posts anything or registers cron, instead of at the first real message.
+    """
+    from . import effects as effects_mod
+    binary = cfg.get("runner_path") or cfg.get("runner") or "codex"
+    argv = [binary, "--version"]
+    try:
+        code, out, err = (effects or effects_mod.DEFAULT).run(
+            argv, timeout=30, env=runner_env(argv))
+    except OSError as exc:
+        raise RunnerError("cannot start %s: %s" % (binary, exc))
+    if code != 0:
+        raise RunnerError(
+            "%s exists but will not start (exit %s): %s\nIt runs fine in your "
+            "shell only if your PATH has what it needs; cron's does not."
+            % (binary, code, (err or out).strip()[:200]))
+    return (out or "").strip()
 
 
 def build_argv(cfg, node_dir, out_file=None):

@@ -13,6 +13,7 @@ from pathlib import Path
 from . import config as config_mod
 from . import effects as effects_mod
 from . import feed as feed_mod
+from . import events as events_mod
 from . import locks, noderef, paths, shortid, slack as slack_mod, store, templates
 from . import treemap as treemap_mod
 
@@ -119,11 +120,9 @@ def _date(ctx):
     return time.strftime("%Y-%m-%d", time.localtime(ctx.now()))
 
 
-def _title_from_thread(ctx, channel, thread_ts):
+def _opening_message(ctx, channel, thread_ts):
     msgs = ctx.slack.thread(channel, thread_ts, limit=1)
-    text = (msgs[0]["text"] if msgs else "").strip().splitlines()
-    first = text[0] if text else ""
-    return (first[:60] or "thread %s" % thread_ts)
+    return (msgs[0]["text"] if msgs else "").strip()
 
 
 def _alias(tree, nid):
@@ -226,14 +225,21 @@ def track(ctx, link, title=None, owner=None, locale=None, proj_id=None,
     locale = locale or ctx.cfg.get("locale", "zh")
     paths.seed(ctx.dh, locale, root=ctx.root)
 
-    title = title or _title_from_thread(ctx, channel, thread_ts)
+    opening = _opening_message(ctx, channel, thread_ts)
+    named = {"id": None, "title": None}
+    if not (title and proj_id):
+        # One model call for both: the id you type in commands and the headline
+        # that shows up in every row of the map.
+        named = shortid.suggest(ctx.cfg, opening or title or "", ctx.dh, run=namer,
+                                effects=ctx.effects)
+    title = title or named.get("title") or shortid.shorten(opening) or \
+        ("thread %s" % thread_ts)
     if proj_id:
         if (paths.project_dir(ctx.dh, proj_id) / "tree.json").exists():
             raise ValueError("project %r already tracked" % (proj_id,))
     else:
-        suggested = shortid.suggest(ctx.cfg, title, ctx.dh, run=namer,
-                                    effects=ctx.effects)
-        proj_id = store.unique_proj_id(ctx.dh, suggested or store.slugify(title))
+        proj_id = store.unique_proj_id(
+            ctx.dh, named.get("id") or store.slugify(title))
 
     for existing in store.list_projects(ctx.dh):
         if store.Tree.load(ctx.dh, existing).root == store.node_id(channel, thread_ts):
@@ -466,6 +472,14 @@ def _set_status(ctx, proj_id, nid, status, reason="", agent=None):
     state["status"] = status
     store.save_state(ctx.dh, proj_id, state)
     sync_treemap(ctx, tree)
+
+    # Recorded, so the ops page can answer "who stopped this, and when". Reading
+    # `untracked` off a tree with no history behind it leaves you guessing.
+    events_mod.append(ctx.dh, {
+        "kind": "status", "ts": ctx.now(), "project": proj_id, "node": nid,
+        "alias": _alias(tree, nid), "title": state.get("title"),
+        "status": status, "reason": reason,
+    })
 
     agent = agent or ctx.agent(state)
     # One template per state rather than one with a `{{status}}` hole: the
