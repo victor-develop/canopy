@@ -225,7 +225,8 @@ $CANOPY_DATA_HOME  (default ~/.canopy/)   # per-user, NOT in the repo
     nodes/<channel>-<thread_ts>/
       state.json
       guide.md                   # summarizer guidance, append-only
-      transcript.jsonl           # raw messages, incrementally persisted
+      digest.md                  # where this node stands NOW, rewritten each tick
+      feed.json                  # the checkpoint segments, append-only
       lock                       # present == in use (pid + start ts)
 ```
 
@@ -260,10 +261,54 @@ Every reply is prepended with the agent's identity: `[$agentName]: …`.
 
 The profile is global, but the worker's prompt is wrapped with a "stay focused on
 *this* node's problem; keep context clean" instruction so a general profile
-doesn't wander. If it genuinely needs upstream context, it **asks A君 first**,
-then may read the parent node's `transcript.jsonl`.
+doesn't wander.
 
-### Loop B — checkpoint feed
+**A child worker gets its parent's digest, read at wake time.** Without it the
+first `@agent` in a fresh sub-thread was answered by a worker that had seen two
+messages — the fork announce and the question — and knew nothing about the
+problem it had been split off from. Its reply was, correctly and uselessly, a
+request for context that was sitting one thread up. The digest is short and
+current by construction, so it costs a few hundred characters rather than a
+history.
+
+It is read at wake time, not copied in at `fork` time: the parent keeps moving,
+and a copy taken once is a second version of the truth that nothing maintains.
+An empty parent digest yields no block at all — the worker then says it lacks
+context, which is honest, rather than being handed something stale.
+
+Canopy stores no transcript. Raw history stays in Slack, and every node carries
+`raw_permalink` (its own thread) plus, in the upstream block, the parent's — so
+a worker that genuinely needs the whole argument can be sent to read it. It
+**asks the node's owner first**; it does not go wandering up the tree on its own.
+
+### Loop B — checkpoint feed, and the digest beside it
+
+The summarizer produces **two things from one call**, because they answer two
+different questions and only one of them is history:
+
+| | `feed.json` → the Slack feed | `digest.md` |
+|---|---|---|
+| shape | append-only checkpoints | one short paragraph |
+| updated | a new entry when something earns one | rewritten from scratch, every time |
+| bounded by | segmenting at the message length cap | a hard character cap |
+| read by | observers, over time | workers on **child** nodes, right now |
+
+A feed answers "what happened here"; a child node needs "what is this about and
+where has it got to". Feeding the feed downward instead would hand a child a
+dated list that grows without bound — and on a young node it is empty anyway,
+which is precisely when a child needs context most.
+
+The two ride in one model call (`CHECKPOINT:` / `DIGEST:`), so the digest costs
+no extra tokens. A batch that is only structural commands still costs nothing at
+all: there is no conversation in it to summarize.
+
+**The summarizer runs on any batch a human talked in** — including one that also
+carried an `@agent` question. It used to be the `else` of "did anything else
+happen", which meant those messages never reached the feed and the cursor moved
+past them anyway. A node whose whole life is `@agent` traffic — every child
+node, right after a fork — ended up with an empty feed and an empty digest, and
+its own children had nothing to inherit.
+
 Each node owns a `feed` — a checkpoint message posted **in the same channel** at
 `track`/`fork` time, linking the raw thread permalink and the tree map. `feed_ts`
 is an **array of segments** (see below). On each wake the summarizer reads

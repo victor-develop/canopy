@@ -91,10 +91,47 @@ def _execute(ctx, proj_id, nid, messages, plan, out_file=None, run=None):
                                     out_file=out_file, run=run))
             _mark_done(ctx, proj_id, nid, reply_key)
     if not results:
-        return run_light(ctx, proj_id, nid, messages, out_file=out_file, run=run)
-    if len(results) == 1:
-        return dict(results[0], kind=plan["kind"])
-    return {"kind": plan["kind"], "steps": results}
+        # Nothing structural, nothing asked: the summarizer *is* the outcome,
+        # and it keeps its own "light" kind for the tick log.
+        return summarize(ctx, proj_id, nid, messages, plan, out_file=out_file,
+                         run=run) or {"kind": plan["kind"]}
+    outcome = (dict(results[0], kind=plan["kind"]) if len(results) == 1
+               else {"kind": plan["kind"], "steps": results})
+    light = summarize(ctx, proj_id, nid, messages, plan, out_file=out_file,
+                      run=run)
+    if light is not None:
+        outcome["summarized"] = light
+    return outcome
+
+
+def summarize(ctx, proj_id, nid, messages, plan, out_file=None, run=None):
+    """The feed and the digest, for any batch a human actually talked in.
+
+    This used to be the `else` of "did anything else happen", so a message that
+    carried an `@agent` question never reached the feed at all — and the cursor
+    moved past it regardless, so it was gone for good. A node whose whole life
+    is `@agent` traffic (every child node, right after a fork) ended up with an
+    empty feed and an empty digest, and its own children had nothing to inherit.
+
+    A batch that is *only* structural commands still costs nothing: `fork`,
+    `guide:` and `untrack` are executed as code, and there is no conversation in
+    them to summarize.
+    """
+    if not messages:
+        return None
+    command_ts = set((d.get("message") or {}).get("ts") for d in plan["commands"])
+    if plan["commands"] and not plan["question"] and \
+            all(m.get("ts") in command_ts for m in messages):
+        return None
+    # Keyed on the newest message: the batch is retried as a whole when any part
+    # of it fails, and a second checkpoint for the same messages is a duplicate
+    # nobody can tell apart from a real one.
+    key = {"command": "summarize", "message": {"ts": messages[-1].get("ts")}}
+    if _already_done(ctx, proj_id, nid, key):
+        return None
+    result = run_light(ctx, proj_id, nid, messages, out_file=out_file, run=run)
+    _mark_done(ctx, proj_id, nid, key)
+    return result
 
 
 DONE_KEEP = 50
@@ -155,6 +192,27 @@ def run_command(ctx, proj_id, nid, detail, out_file=None):
     return {"command": cmd, "skipped": "unknown command"}
 
 
+def upstream_for(ctx, proj_id, state):
+    """The parent's digest, read at wake time. -> a block, or "".
+
+    Read now rather than snapshotted at fork: the parent keeps moving, and a
+    copy taken once is a second version of the truth that nothing maintains.
+    Empty parent digest means an empty block — the worker then says it lacks
+    context, which is honest, instead of being handed a stale one.
+    """
+    parent_nid = state.get("parent")
+    if not parent_nid:
+        return ""
+    try:
+        parent_state = store.load_state(ctx.dh, proj_id, parent_nid)
+    except FileNotFoundError:
+        return ""
+    digest = prompts.read_digest(ctx.node_dir(proj_id, parent_nid))
+    if not digest:
+        return ""
+    return prompts.upstream_block(parent_state, digest)
+
+
 def run_full(ctx, proj_id, nid, messages, agent, out_file=None, run=None):
     """A woken agent: profile + this node + the increment, then one reply."""
     state = store.load_state(ctx.dh, proj_id, nid)
@@ -165,6 +223,7 @@ def run_full(ctx, proj_id, nid, messages, agent, out_file=None, run=None):
         messages,
         guide_text=prompts.read_guide(node_dir),
         agent=agent,
+        upstream=upstream_for(ctx, proj_id, state),
     )
     answer = (run or runner_mod.run)(ctx.cfg, prompt, node_dir, out_file=out_file,
                                      effects=ctx.effects)
@@ -192,17 +251,23 @@ def run_light(ctx, proj_id, nid, messages, out_file=None, run=None):
     answer = ((run or runner_mod.run)(ctx.cfg, prompt, node_dir,
                                       out_file=out_file,
                                       effects=ctx.effects) or "").strip()
-    answer = _last_line(answer)
-    if not answer or answer == SKIP:
-        return {"kind": "light", "appended": False}
+    parsed = prompts.parse_summary(answer)
+    # The digest is written even when nothing was checkpoint-worthy: "still
+    # arguing about X, nothing settled" is exactly what a child node needs, and
+    # it is the state that goes stale fastest.
+    digest = prompts.write_digest(node_dir, parsed.get("digest") or "")
+    checkpoint = parsed.get("checkpoint")
+    if not checkpoint:
+        return {"kind": "light", "appended": False, "digest": bool(digest)}
     last = messages[-1] if messages else {}
     result = ops.append_checkpoint(
-        ctx, proj_id, nid, answer,
+        ctx, proj_id, nid, checkpoint,
         author=last.get("user") or "",
         raw_permalink=ctx.permalink(state["channel"], last.get("ts") or
                                     state["thread_ts"]),
     )
-    return {"kind": "light", "appended": True, "result": result}
+    return {"kind": "light", "appended": True, "result": result,
+            "digest": bool(digest)}
 
 
 def summarize_for_return(ctx, proj_id, nid, out_file=None, run=None):

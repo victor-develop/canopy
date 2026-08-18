@@ -7,15 +7,20 @@ profile wanders into the parent thread's argument.
 """
 
 import json
+import re
 from pathlib import Path
+
+DIGEST_FILE = "digest.md"
+DIGEST_MAX = 400
 
 FOCUS = (
     "You are woken for ONE node of a problem tree — one Slack thread, one "
     "sub-problem. Stay on it. You are reading only the messages that arrived "
-    "since the last checkpoint, which is deliberate: do not ask for, invent, or "
-    "assume the rest of the history. If you genuinely need context from the "
-    "parent thread, say so in your reply and ask the node's owner — do not go "
-    "read it on your own."
+    "since the last checkpoint, plus a short digest of where the parent problem "
+    "stands. That is deliberate: do not invent or assume the rest of the "
+    "history. The full thread is a Slack link away (`raw_permalink` below, and "
+    "the parent's link if there is one) — if you genuinely need it, say so in "
+    "your reply and ask the node's owner first."
 )
 
 REPLY_CONTRACT = (
@@ -26,12 +31,21 @@ REPLY_CONTRACT = (
 )
 
 SUMMARY_CONTRACT = (
-    "Decide first whether anything here is checkpoint-worthy — a decision, a "
-    "result, a blocker, a handoff. Chatter is not. If nothing qualifies, make "
-    "your final message exactly: SKIP\n"
-    "Otherwise your final message is ONE line: the checkpoint itself, in the "
-    "language the thread is speaking, no bullet, no prefix."
-)
+    "Your final message is exactly two lines, in this order and nothing else:\n"
+    "\n"
+    "CHECKPOINT: <one line, in the language the thread speaks, no bullet, no "
+    "prefix — or the single word SKIP>\n"
+    "DIGEST: <where this problem stands *now*, at most %d characters>\n"
+    "\n"
+    "CHECKPOINT is for the feed, which people read as history: only a decision, "
+    "a result, a blocker or a handoff earns one. Chatter earns SKIP.\n"
+    "\n"
+    "DIGEST is not history. Rewrite it from scratch every time, describing the "
+    "current state: what the problem is, where it has got to, what it is "
+    "waiting on. Workers on child threads read it and cannot see this thread at "
+    "all, so write it for someone who has never read a word of it. Keep it "
+    "short enough to stay true — a digest that grows is a second feed."
+) % (DIGEST_MAX,)
 
 SKIP = "SKIP"
 
@@ -56,7 +70,53 @@ def node_block(state):
     return json.dumps(slim, ensure_ascii=False, indent=2)
 
 
-def worker_prompt(state, profile_text, messages, guide_text="", agent="canopy"):
+def parse_summary(answer):
+    """-> {"checkpoint", "digest"}, either possibly None.
+
+    Tolerant on purpose: models label the lines, wrap them in code fences, or
+    answer with the bare checkpoint the old contract asked for. A summarizer
+    that returns something unparseable should cost a lost digest, never a lost
+    checkpoint.
+    """
+    text = (answer or "").strip().strip("`").strip()
+    if not text:
+        return {"checkpoint": None, "digest": None}
+    got = {}
+    for label in ("checkpoint", "digest"):
+        match = re.search(r"^\s*%s\s*[:：]\s*(.+?)\s*$" % label,
+                          text, re.IGNORECASE | re.MULTILINE | re.DOTALL)
+        got[label] = match.group(1).strip() if match else None
+    if got["checkpoint"] is None and got["digest"] is None:
+        # An answer in the old shape: one bare line, and it is the checkpoint.
+        got["checkpoint"] = text.splitlines()[-1].strip()
+    for label in ("checkpoint", "digest"):
+        if got[label] and got[label].strip().upper() == SKIP:
+            got[label] = None
+    if got["digest"]:
+        got["digest"] = shorten_digest(got["digest"])
+    return got
+
+
+def shorten_digest(text, limit=DIGEST_MAX):
+    """A digest that grows is a second feed, so the cap is enforced here too."""
+    text = " ".join((text or "").split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "…"
+
+
+def upstream_block(parent_state, digest):
+    """What a child worker is told about the problem it was split off from."""
+    lines = ["Parent: %s" % (parent_state.get("title") or parent_state.get("node_id"))]
+    if parent_state.get("raw_permalink"):
+        lines.append("Its thread: %s" % parent_state["raw_permalink"])
+    lines.append("")
+    lines.append(digest.strip())
+    return "\n".join(lines)
+
+
+def worker_prompt(state, profile_text, messages, guide_text="", agent="canopy",
+                  upstream=None):
     parts = [
         FOCUS,
         "",
@@ -66,6 +126,9 @@ def worker_prompt(state, profile_text, messages, guide_text="", agent="canopy"):
         "## This node",
         node_block(state),
     ]
+    if upstream and upstream.strip():
+        parts += ["", "## Upstream — the parent problem, as it stands now",
+                  upstream.strip()]
     if guide_text.strip():
         parts += ["", "## Standing guidance for this node", guide_text.strip()]
     parts += [
@@ -133,6 +196,20 @@ def recalibrate_prompt(state, base_prompt, chunk, previous_notes=None,
 
 def read_guide(node_dir):
     return _read(Path(node_dir) / "guide.md")
+
+
+def read_digest(node_dir):
+    """The node's current-state summary. Overwritten every time, never appended."""
+    return _read(Path(node_dir) / DIGEST_FILE).strip()
+
+
+def write_digest(node_dir, text):
+    text = shorten_digest(text)
+    if not text:
+        return ""
+    Path(node_dir).mkdir(parents=True, exist_ok=True)
+    (Path(node_dir) / DIGEST_FILE).write_text(text + "\n", encoding="utf-8")
+    return text
 
 
 def read_profile(dh, agent):
