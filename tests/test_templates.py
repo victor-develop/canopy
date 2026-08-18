@@ -131,3 +131,34 @@ def test_refresh_reports_instead_of_overwriting_when_asked(dh, repo):
 
     updated, kept = paths.refresh(dh, "zh", root=repo, force=True)
     assert [p.name for p in updated] == ["reply.md"] and kept == []
+
+
+def test_channel_messages_open_with_a_divider(repo):
+    """Canopy posts the digest and the map back to back; without a rule at the
+    top they read as one wall of text."""
+    for locale in ("zh", "en"):
+        for name in ("feed-root.md", "feed-fork.md", "feed-segment.md",
+                     "tree-map.md", "tree-map-more.md"):
+            path = repo / "templates" / "messages" / locale / name
+            body = templates.parse(path.read_text(encoding="utf-8"))[1]
+            assert body.lstrip().startswith("─"), "%s/%s" % (locale, name)
+
+
+def test_in_thread_messages_do_not_get_a_divider(repo):
+    """A rule inside a thread is noise: those are one-liners between humans."""
+    for locale in ("zh", "en"):
+        for name in ("reply.md", "track-announce.md", "fork-announce.md",
+                     "return-post.md", "status-untracked.md"):
+            path = repo / "templates" / "messages" / locale / name
+            body = templates.parse(path.read_text(encoding="utf-8"))[1]
+            assert not body.lstrip().startswith("─"), "%s/%s" % (locale, name)
+
+
+def test_the_digest_is_pinnable_at_a_glance(repo):
+    """The digest is the one message an observer pins, so it says so."""
+    for locale in ("zh", "en"):
+        for name in ("feed-root.md", "feed-fork.md"):
+            body = templates.parse(
+                (repo / "templates" / "messages" / locale / name)
+                .read_text(encoding="utf-8"))[1]
+            assert "📌" in body
