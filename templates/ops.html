@@ -83,6 +83,11 @@
   <div id="trees"></div>
 </section>
 
+<section>
+  <h2>最近的状态变更</h2>
+  <div id="status"></div>
+</section>
+
 <section style="border-bottom:0">
   <h2>最近的失败</h2>
   <div id="errors"></div>
@@ -180,6 +185,16 @@ function trees(){
       <td class="mono">${n.checkpoints || 0}</td></tr>`).join("") + `</table>`).join("");
 }
 
+function statuses(){
+  const rows = D.recent_status || [];
+  if(!rows.length){ el("status").innerHTML = `<div class="empty">没有节点被停过或重开过。</div>`; return; }
+  el("status").innerHTML = `<table><tr><th>什么时候</th><th>节点</th><th>改成</th><th>理由</th></tr>` +
+    rows.map(r => `<tr><td class="mono">${ago(r.ts)}前</td>
+      <td><b>${esc(r.alias)}</b> ${esc(r.title)}</td>
+      <td>${pill(r.status, r.status === "active" ? "ok" : "")}</td>
+      <td>${esc(r.reason) || "<span class=\"empty\">—</span>"}</td></tr>`).join("") + `</table>`;
+}
+
 function errors(){
   if(!D.recent_errors.length){ el("errors").innerHTML = `<div class="empty">最近没有失败。</div>`; return; }
   el("errors").innerHTML = D.recent_errors.map(e =>
@@ -187,7 +202,7 @@ function errors(){
 }
 
 function paint(){
-  heartbeat(); running(); workers(); trees(); errors();
+  heartbeat(); running(); workers(); trees(); statuses(); errors();
   el("stamp").textContent = "快照写于 " + new Date(D.now*1000).toLocaleString();
   el("paths").textContent = `${D.data_home} · runner ${D.runner_path || D.runner} · slackcli ${D.slack_cli || "—"}`;
 }

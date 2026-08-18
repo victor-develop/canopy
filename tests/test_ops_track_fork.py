@@ -169,7 +169,8 @@ def test_second_tree_with_a_colliding_slug_gets_a_suffix(ctx, slack, tracked):
 def test_tracking_the_same_thread_twice_is_refused(ctx, tracked):
     link = "https://example.slack.com/archives/C0PAY/p1699000001000100"
     with pytest.raises(ValueError) as exc:
-        ops.track(ctx, link, proj_id="another-name")
+        ops.track(ctx, link, proj_id="another-name",
+                  namer=lambda *a, **k: "id: another-name\ntitle: 又一次")
     assert "already tracked" in str(exc.value)
 
 

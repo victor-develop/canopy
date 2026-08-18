@@ -298,3 +298,16 @@ def test_start_background_reports_the_port_the_child_actually_bound(dh, monkeypa
         assert info["port"] == taken + 1
     finally:
         squatter.close()
+
+
+def test_status_changes_are_recorded_with_who_and_why(ctx, slack, tracked):
+    """Reading `untracked` off a tree with no history behind it leaves you
+    guessing who stopped it."""
+    from canopy import ops
+    ops.set_status(ctx, tracked["proj_id"], tracked["node_id"], "untracked",
+                   reason="样例还在打磨")
+
+    snap = opsview.snapshot(ctx.dh, ctx.cfg, run=lambda argv, stdin="": (0, "", ""))
+    entry = snap["recent_status"][0]
+    assert entry["status"] == "untracked" and entry["reason"] == "样例还在打磨"
+    assert entry["alias"] == "1"

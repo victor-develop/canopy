@@ -47,17 +47,25 @@ def _alive(pid):
 
 
 def status(dh):
-    """-> {"pid", "port", "url", "running"} for whatever was started last."""
+    """-> {"pid", "port", "url", "running", "serving"}.
+
+    `running` means the process exists; `serving` means it also answers. The two
+    are separate on purpose: a viewer that started but never recorded a port is
+    still a process somebody has to account for, and treating it as absent is
+    what let them pile up.
+    """
     info = store.read_json(state_path(dh), default=None)
     if not info:
-        return {"running": False}
+        return {"running": False, "serving": False}
     info = dict(info)
-    info["running"] = _alive(info.get("pid")) and bool(info.get("port"))
+    info["running"] = _alive(info.get("pid"))
+    info["serving"] = info["running"] and bool(info.get("port"))
     info["url"] = ("http://%s:%s/" % (HOST, info["port"])) if info.get("port") else None
     return info
 
 
 def stop(dh):
+    """Kill whatever we started, answering or not."""
     info = status(dh)
     if not info.get("running"):
         state_path(dh).unlink() if state_path(dh).exists() else None
@@ -221,12 +229,12 @@ def start_background(dh, cfg, root=None, port=None, spawn=None, effects=None):
     time, and nobody wants a port-per-tracked-tree.
     """
     current = status(dh)
-    if current.get("running") and _responds(current.get("port")):
+    if current.get("serving") and _responds(current.get("port")):
         return current
     if current.get("running"):
-        # Recorded pid is alive but nothing answers on the port: a stale record,
-        # or someone else's process reusing the pid. Do not stack another one on
-        # top without clearing it first.
+        # A process is there but not answering — it died half-started, it never
+        # recorded a port, or the pid was recycled. Kill it before starting
+        # another. Never leave two.
         stop(dh)
 
     import sys
@@ -235,7 +243,12 @@ def start_background(dh, cfg, root=None, port=None, spawn=None, effects=None):
     # Ask for a port, do not claim it: between our bind test and the child's
     # bind, anything could take it. The child records what it actually got.
     wanted = port or int(cfg.get("serve_port", DEFAULT_PORT))
+    # `--data-dir` is not optional: without it the child records its port in the
+    # *default* data home, the parent waits for a record that never arrives in
+    # this one, decides no viewer is running, and spawns another on the next
+    # call. That is unbounded — it is how the process leak came back.
     argv = [sys.executable, str(Path(__file__).resolve().parents[1] / "canopy_main.py"),
+            "--data-dir", str(dh),
             "serve", "--port", str(wanted), "--no-open"]
     if spawn is None and effects is not None:
         spawn = lambda argv, dh: effects.spawn(argv)

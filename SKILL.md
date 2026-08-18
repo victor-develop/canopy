@@ -397,10 +397,20 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
   discussing there learn it is watched and where to follow, register the cron
   job, post the tree map.
 
-  The projId is not a slug of the title: `track` asks the runner for a short
-  semantic id (`figma-free-design`) because that id gets typed in every later
-  command, and falls back to the mechanical slug when the call fails. One small
-  model call, once per tree.
+  **Naming, in one model call.** `track` asks the runner for two things: the
+  projId you type in later commands (`figma-free-design`) and a headline of at
+  most ~12 Chinese characters. Neither can be derived: the first 60 characters
+  of the opening message arrives with "问题:" still attached and sliced through
+  the middle of a word, and that string then appears in the map header and in
+  every row. When the call fails, the fallback drops the opener and cuts at
+  punctuation instead of at a character count. `canopy rename` fixes either.
+
+  **Prove the runner starts, do not just find it.** `resolve_path` only shows a
+  file exists. `codex` is a node script whose shebang runs `env node`, and cron's
+  PATH has no node — so every worker died with `exit 127` while the same command
+  worked in a shell. `track` now runs `<runner> --version` first, and every
+  runner call gets the binary's own directory prepended to PATH (a version
+  manager keeps the interpreter next to the tool).
 
   The announce is not optional politeness: without it, a feed exists that the
   actual participants never hear about, and A君 ends up pasting the link by hand

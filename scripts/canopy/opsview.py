@@ -105,6 +105,7 @@ def snapshot(dh, cfg, now=None, alive=None, run=None):
         "running": _worker_processes(dh, cfg, now=now, alive=alive),
         "trees": _trees(dh),
         "recent_workers": workers[-25:][::-1],
+        "recent_status": [e for e in log if e.get("kind") == "status"][-10:][::-1],
         "recent_errors": errors[-10:][::-1],
         "ticks": ticks[-60:],
     }

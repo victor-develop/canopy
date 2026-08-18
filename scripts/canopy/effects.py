@@ -40,13 +40,13 @@ class Effects(object):
 
     name = "real"
 
-    def run(self, argv, stdin=None, timeout=None, cwd=None):
+    def run(self, argv, stdin=None, timeout=None, cwd=None, env=None):
         """A subprocess that runs to completion. -> (code, stdout, stderr)."""
         proc = subprocess.run(
             argv,
             input=stdin.encode("utf-8") if stdin is not None else None,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            cwd=str(cwd) if cwd else None, timeout=timeout,
+            cwd=str(cwd) if cwd else None, timeout=timeout, env=env,
             start_new_session=True)
         return (proc.returncode,
                 proc.stdout.decode("utf-8", "replace"),
@@ -86,8 +86,9 @@ class Recording(Effects):
         self.opened = []
         self._run = run
 
-    def run(self, argv, stdin=None, timeout=None, cwd=None):
-        self.calls.append({"argv": list(argv), "stdin": stdin, "cwd": cwd})
+    def run(self, argv, stdin=None, timeout=None, cwd=None, env=None):
+        self.calls.append({"argv": list(argv), "stdin": stdin, "cwd": cwd,
+                           "env": env})
         if self._run is None:
             raise EffectEscaped(
                 "a test ran a subprocess with no stub: %r" % (list(argv),))

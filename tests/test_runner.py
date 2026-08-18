@@ -96,23 +96,60 @@ def test_shortid_rejects_prose_and_falls_back():
     assert shortid.sanitize("---") is None
 
 
-def test_shortid_returns_none_when_the_runner_fails(tmp_path):
+def test_shortid_returns_nothing_when_the_runner_fails(tmp_path):
     from canopy import shortid
     from canopy.errors import RunnerError
 
     def boom(*a, **k):
         raise RunnerError("codex not installed")
 
-    assert shortid.suggest({}, "支付超时", tmp_path, run=boom) is None
+    assert shortid.suggest({}, "支付超时", tmp_path, run=boom) == \
+        {"id": None, "title": None}
 
 
-def test_track_uses_the_suggested_id(ctx, slack):
+def test_shortid_parses_the_two_line_answer():
+    from canopy import shortid
+    got = shortid.parse("id: figma-free-design\ntitle: 设计师不用 Figma 出码")
+    assert got == {"id": "figma-free-design", "title": "设计师不用 Figma 出码"}
+
+
+def test_shortid_still_takes_a_bare_id():
+    from canopy import shortid
+    assert shortid.parse("figma-free-design")["id"] == "figma-free-design"
+
+
+def test_shorten_cuts_at_punctuation_and_drops_the_opener():
+    from canopy import shortid
+    raw = ("问题: AI Agent 生成 prototype 对于设计师来说很实用,可以指出 "
+           "html/react components,但是在脑暴的情况下…")
+    short = shortid.shorten(raw)
+    assert not short.startswith("问题")
+    assert shortid._width(short) <= 26          # limit plus the ellipsis
+    assert not short.rstrip("…").endswith("compone")   # never mid-word
+
+
+def test_track_uses_the_suggested_id_and_title(ctx, slack):
     from canopy import ops
     channel, ts = "C0NEW", "1699000900.000100"
-    slack.add(channel, ts, ts, "U1", "设计师不用 Figma 的方案")
+    slack.add(channel, ts, ts, "U1",
+              "问题: AI Agent 生成 prototype 对设计师很实用,但是精度有损失……")
     link = "https://example.slack.com/archives/%s/p1699000900000100" % channel
-    result = ops.track(ctx, link, namer=lambda *a, **k: "figma-free-design")
+    result = ops.track(ctx, link, namer=lambda *a, **k:
+                       "id: figma-free-design\ntitle: 设计师不用 Figma 出码")
     assert result["proj_id"] == "figma-free-design"
+    assert result["title"] == "设计师不用 Figma 出码"
+
+
+def test_track_falls_back_to_a_shortened_opening_line(ctx, slack):
+    """No model answer: still not 60 raw characters cut mid-word."""
+    from canopy import ops, shortid
+    channel, ts = "C0NEW", "1699000900.000100"
+    slack.add(channel, ts, ts, "U1",
+              "问题: AI Agent 生成 prototype 对于设计师来说很实用,可以指出 html/react components")
+    link = "https://example.slack.com/archives/%s/p1699000900000100" % channel
+    result = ops.track(ctx, link, namer=lambda *a, **k: "")
+    assert shortid._width(result["title"]) <= 26
+    assert not result["title"].startswith("问题")
 
 
 def test_track_falls_back_to_the_slug_when_the_namer_fails(ctx, slack):
@@ -153,3 +190,36 @@ def test_the_answer_file_is_cleared_before_the_run(tmp_path):
     assert runner.run({"runner": "codex"}, "P", tmp_path, out_file=out,
                       exec_fn=exec_fn) == "fresh"
     assert seen["existed"] is False
+
+
+def test_the_runner_gets_its_own_directory_on_PATH():
+    """`codex` is a node script whose shebang runs `env node`. Resolving codex to
+    an absolute path was not enough: cron's PATH has no node, so every worker
+    died with `exit 127: env: node: No such file or directory` — while the same
+    command worked fine from a shell."""
+    env = runner.runner_env(["/opt/mise/installs/node/22/bin/codex", "exec"],
+                            base={"PATH": "/usr/bin:/bin"})
+    assert env["PATH"].startswith("/opt/mise/installs/node/22/bin:")
+
+
+def test_a_relative_runner_leaves_PATH_alone():
+    env = runner.runner_env(["codex"], base={"PATH": "/usr/bin"})
+    assert env["PATH"] == "/usr/bin"
+
+
+def test_probe_reports_a_runner_that_exists_but_will_not_start():
+    """`command -v` only proves a file exists — this is the failure it misses."""
+    from canopy import effects as effects_mod
+
+    rec = effects_mod.Recording(
+        run=lambda argv, stdin="": (127, "", "env: node: No such file or directory"))
+    with pytest.raises(RunnerError) as exc:
+        runner.probe({"runner_path": "/abs/codex"}, effects=rec)
+    assert "will not start" in str(exc.value) and "node" in str(exc.value)
+
+
+def test_probe_passes_the_fixed_environment():
+    from canopy import effects as effects_mod
+    rec = effects_mod.Recording(run=lambda argv, stdin="": (0, "codex 1.0", ""))
+    assert runner.probe({"runner_path": "/opt/bin/codex"}, effects=rec) == "codex 1.0"
+    assert rec.calls[0]["env"]["PATH"].startswith("/opt/bin:")
