@@ -140,8 +140,10 @@ def probe(cfg, cwd=None, effects=None):
     if code != 0:
         raise RunnerError(
             "%s will not do a job in cron's environment (exit %s): %s\n"
-            "It works in your terminal because your shell profile ran; cron "
-            "runs no profile. Check cron_login_shell in config.json."
+            "A missing variable means the profile: `track` runs from your "
+            "terminal, cron runs no profile — see cron_login_shell in "
+            "config.json. Anything from the provider (429, a timeout) is "
+            "probably transient; run `track` again."
             % (binary, code, failure_detail(out, err, limit=400)))
     return (out or "").strip()
 

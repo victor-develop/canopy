@@ -246,6 +246,21 @@ def test_probe_reports_a_runner_that_exists_but_will_not_start():
     assert "will not do a job" in str(exc.value) and "node" in str(exc.value)
 
 
+def test_probe_does_not_blame_the_environment_for_every_failure():
+    """The first version of this message told you to check cron_login_shell —
+    including when the runner had said `429 Too Many Requests`, which has
+    nothing to do with your profile."""
+    from canopy import effects as effects_mod
+    rec = effects_mod.Recording(
+        run=lambda argv, stdin="": (1, "", "ERROR: exceeded retry limit, last "
+                                           "status: 429 Too Many Requests"))
+    with pytest.raises(RunnerError) as exc:
+        runner.probe({"runner_path": "/abs/codex"}, effects=rec)
+    message = str(exc.value)
+    assert "429" in message
+    assert "transient" in message and "again" in message
+
+
 def test_probe_passes_the_fixed_environment():
     from canopy import effects as effects_mod
     rec = effects_mod.Recording(run=lambda argv, stdin="": (0, "ok", ""))
