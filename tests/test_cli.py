@@ -32,7 +32,7 @@ def test_track_registers_cron_and_prints_links(cli_env, capsys, monkeypatch):
     slack.add("C0PAY", "1699000001.000100", "1699000001.000100", "U1", "支付超时")
     installed = {}
     monkeypatch.setattr(cli.runner_mod, "resolve_path", lambda r: "/abs/codex")
-    monkeypatch.setattr(cli.runner_mod, "probe", lambda cfg, effects=None: "codex 1.2.3")
+    monkeypatch.setattr(cli.runner_mod, "probe", lambda cfg, **kw: "ok")
     monkeypatch.setattr(cli.schedule, "sync",
                         lambda dh, cfg, **kw: installed.update(
                             cmd=cli.schedule.tick_command(), synced=True))
@@ -262,7 +262,7 @@ def test_track_starts_the_viewer_and_opens_it(cli_env, capsys, monkeypatch):
     monkeypatch.setattr(cli.webserve, "_responds", lambda port: True)
     opened = effects.opened
     monkeypatch.setattr(cli.runner_mod, "resolve_path", lambda r: "/abs/x")
-    monkeypatch.setattr(cli.runner_mod, "probe", lambda cfg, effects=None: "x 1.0")
+    monkeypatch.setattr(cli.runner_mod, "probe", lambda cfg, **kw: "ok")
     monkeypatch.setattr(cli.schedule, "sync", lambda dh, cfg, **kw: None)
     cli_env["slack"].add("C0PAY", "1699000001.000100", "1699000001.000100", "U1", "支付超时")
 

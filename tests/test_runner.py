@@ -76,6 +76,34 @@ def test_nonzero_exit_raises_with_stderr(tmp_path):
     assert "boom" in str(exc.value)
 
 
+def test_nonzero_exit_keeps_the_reason_not_the_banner(tmp_path):
+    """The reason is the last thing printed, and codex prints a lot before it.
+
+    Three real failures in a row logged the identical 530-character string,
+    every one of them cut mid-prompt-echo, so what codex actually complained
+    about was gone. Head-truncation is the bug, not the length.
+    """
+    noise = "OpenAI Codex v0.147.0\n" + "You are woken for ONE node. " * 400
+    with pytest.raises(RunnerError) as exc:
+        runner.run({"runner": "codex"}, "P", tmp_path,
+                   exec_fn=lambda a, p, c: (1, "", noise + "\nstream error: 429"))
+    assert "stream error: 429" in str(exc.value)
+    assert "OpenAI Codex v0.147.0" not in str(exc.value)
+
+
+def test_nonzero_exit_keeps_both_streams(tmp_path):
+    """`err or out` made whichever stream lost unrecoverable."""
+    with pytest.raises(RunnerError) as exc:
+        runner.run({"runner": "codex"}, "P", tmp_path,
+                   exec_fn=lambda a, p, c: (1, "half an answer", "died here"))
+    message = str(exc.value)
+    assert "died here" in message and "half an answer" in message
+
+
+def test_failure_detail_says_so_when_there_was_no_output():
+    assert "no output" in runner.failure_detail("", "   ")
+
+
 # -- the project's short id ---------------------------------------------------
 
 def test_shortid_accepts_a_clean_answer():
@@ -215,11 +243,63 @@ def test_probe_reports_a_runner_that_exists_but_will_not_start():
         run=lambda argv, stdin="": (127, "", "env: node: No such file or directory"))
     with pytest.raises(RunnerError) as exc:
         runner.probe({"runner_path": "/abs/codex"}, effects=rec)
-    assert "will not start" in str(exc.value) and "node" in str(exc.value)
+    assert "will not do a job" in str(exc.value) and "node" in str(exc.value)
+
+
+def test_probe_does_not_blame_the_environment_for_every_failure():
+    """The first version of this message told you to check cron_login_shell —
+    including when the runner had said `429 Too Many Requests`, which has
+    nothing to do with your profile."""
+    from canopy import effects as effects_mod
+    rec = effects_mod.Recording(
+        run=lambda argv, stdin="": (1, "", "ERROR: exceeded retry limit, last "
+                                           "status: 429 Too Many Requests"))
+    with pytest.raises(RunnerError) as exc:
+        runner.probe({"runner_path": "/abs/codex"}, effects=rec)
+    message = str(exc.value)
+    assert "429" in message
+    assert "transient" in message and "again" in message
 
 
 def test_probe_passes_the_fixed_environment():
     from canopy import effects as effects_mod
-    rec = effects_mod.Recording(run=lambda argv, stdin="": (0, "codex 1.0", ""))
-    assert runner.probe({"runner_path": "/opt/bin/codex"}, effects=rec) == "codex 1.0"
+    rec = effects_mod.Recording(run=lambda argv, stdin="": (0, "ok", ""))
+    assert runner.probe({"runner_path": "/opt/bin/codex"}, effects=rec) == "ok"
     assert rec.calls[0]["env"]["PATH"].startswith("/opt/bin:")
+
+
+def test_probe_asks_for_real_work_not_just_a_version():
+    """`--version` needs no credentials, so it passed while every worker died
+    with `ERROR: Missing environment variable: AM_API_KEY`."""
+    from canopy import effects as effects_mod
+    rec = effects_mod.Recording(run=lambda argv, stdin="": (0, "ok", ""))
+    runner.probe({"runner": "codex", "runner_path": "/opt/bin/codex"}, effects=rec)
+    argv = rec.calls[0]["argv"]
+    assert "--version" not in argv
+    assert "exec" in argv and argv[-1] == "-"
+    assert rec.calls[0]["stdin"] == runner.PROBE_PROMPT
+
+
+def test_probe_strips_the_callers_environment():
+    """`track` runs from a terminal where everything already works. Probing with
+    that environment proves nothing about the one the tick gets."""
+    from canopy import effects as effects_mod
+    rec = effects_mod.Recording(run=lambda argv, stdin="": (0, "ok", ""))
+    runner.probe({"runner_path": "/opt/bin/codex"}, effects=rec)
+    env = rec.calls[0]["env"]
+    assert "AM_API_KEY" not in env          # whatever the caller happens to export
+    assert set(env) <= {"HOME", "PATH", "LOGNAME", "USER"}
+
+
+def test_probe_goes_through_the_login_shell_the_crontab_uses():
+    from canopy import effects as effects_mod
+    rec = effects_mod.Recording(run=lambda argv, stdin="": (0, "ok", ""))
+    runner.probe({"runner_path": "/opt/bin/codex", "cron_login_shell": "/bin/zsh"},
+                 effects=rec)
+    argv = rec.calls[0]["argv"]
+    assert argv[0:2] == ["/bin/zsh", "-lc"]
+    assert "/opt/bin/codex exec" in argv[2]
+
+
+def test_cron_style_argv_is_a_no_op_without_a_login_shell():
+    assert runner.cron_style_argv(["codex", "exec"]) == ["codex", "exec"]

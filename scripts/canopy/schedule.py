@@ -39,7 +39,8 @@ def sync(dh, cfg, run=None, tick_cmd=None):
     if wanted and not present:
         cron.install(tick_cmd or tick_command(),
                      cfg.get("cron_interval_minutes", 5),
-                     data_home=str(dh), run=run)
+                     data_home=str(dh),
+                     login_shell=cfg.get("cron_login_shell"), run=run)
         return INSTALLED
     if present and not wanted:
         cron.uninstall(run=run)
