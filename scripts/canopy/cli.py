@@ -71,6 +71,12 @@ def cmd_track(args):
                 "cron behind it." % (exc,))
     result = ops.track(ctx, args.link, title=args.title, owner=args.owner,
                        locale=args.locale, proj_id=args.project)
+    # A thread worth adopting is usually one that has been argued in for a
+    # while, and `track` sets the cursor to now — so without this the whole
+    # argument is never read by anything: the feed opens empty and the digest
+    # stays empty, which is exactly the state a first child node inherits.
+    if not args.no_recalibrate:
+        rebuilt = worker.recalibrate(ctx, result["proj_id"], result["node_id"])
     if not args.no_cron:
         schedule.sync(ctx.dh, ctx.cfg)
         # Same gate as cron: `--no-cron` means "set up the state, wire nothing
@@ -79,6 +85,10 @@ def cmd_track(args):
                                           effects=ctx.effects)
         _open(viewer["url"], ctx)
     print("tracked %s as `%s`" % (result["title"], result["proj_id"]))
+    if not args.no_recalibrate:
+        print("  历史     %d 条 checkpoint%s"
+              % (rebuilt["checkpoints"],
+                 "" if rebuilt.get("digest") else "(现状摘要为空)"))
     print("  feed     %s" % ctx.permalink(result["node_id"].split("-")[0],
                                           result["feed_ts"]))
     print("  树消息   %s" % result["tree_permalink"])
@@ -434,6 +444,8 @@ def build_parser():
     p.add_argument("--locale")
     p.add_argument("--project")
     p.add_argument("--no-cron", action="store_true")
+    p.add_argument("--no-recalibrate", action="store_true",
+                   help="adopt the thread without reading its history first")
     p.set_defaults(func=cmd_track)
 
     p = sub.add_parser("agents", help="list / create / delete agent profiles")

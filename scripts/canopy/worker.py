@@ -310,8 +310,19 @@ def recalibrate(ctx, proj_id, nid, chunk_size=80, out_file=None, run=None):
                for note in notes]
     segments = feed.rebuild(entries)
     store.save_state(ctx.dh, proj_id, state)
+
+    # One more small call: the checkpoints boiled down to a current state. The
+    # per-tick summarizer writes the digest as it goes, so without this the
+    # heavy path left it exactly as stale as it found it.
+    digest = ""
+    if notes:
+        answer = ((run or runner_mod.run)(
+            ctx.cfg, prompts.digest_prompt(state, base, notes, guide_text=guide),
+            node_dir, out_file=out_file, effects=ctx.effects) or "").strip()
+        if answer and answer != SKIP:
+            digest = prompts.write_digest(node_dir, _last_line(answer))
     return {"kind": "recalibrate", "checkpoints": len(notes),
-            "segments": len(segments)}
+            "segments": len(segments), "digest": bool(digest)}
 
 
 def handle(ctx, proj_id, nid, messages, agents=None, out_file=None, run=None):

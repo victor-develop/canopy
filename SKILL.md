@@ -457,6 +457,14 @@ inserted**, so anything durable (cron args, `tree.json`, logs) stores node ids.
   runner call gets the binary's own directory prepended to PATH (a version
   manager keeps the interpreter next to the tool).
 
+  **`track` reads the history it just adopted.** The cursor starts at now, so
+  without this the argument that made the thread worth adopting is never read by
+  anything: the feed opens empty, the digest stays empty, and the first child
+  node forked off it inherits nothing — which is exactly the case a digest
+  exists for. `track` therefore runs a `recalibrate` before wiring up cron, and
+  `--no-recalibrate` opts out for a thread whose history genuinely does not
+  matter.
+
   The announce is not optional politeness: without it, a feed exists that the
   actual participants never hear about, and A君 ends up pasting the link by hand
   to everyone. It also doubles as the in-thread hint for `fork` / `guide:`, which

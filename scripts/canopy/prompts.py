@@ -194,6 +194,37 @@ def recalibrate_prompt(state, base_prompt, chunk, previous_notes=None,
     return "\n".join(parts)
 
 
+def digest_prompt(state, base_prompt, entries, guide_text=""):
+    """One last small call after a rebuild: the checkpoints, boiled to a state.
+
+    `recalibrate` is the other way a feed comes into existence, so without this
+    the escape hatch left the digest exactly as stale as it found it — and
+    `track` uses that path to adopt a thread mid-argument, which is precisely
+    when a child node would inherit nothing.
+    """
+    parts = [
+        base_prompt.strip() or "You maintain a checkpoint feed for one node.",
+        "",
+        "## This node",
+        node_block(state),
+    ]
+    if guide_text.strip():
+        parts += ["", "## Standing guidance", guide_text.strip()]
+    parts += [
+        "",
+        "## Every checkpoint recorded for this node, oldest first",
+        "\n".join(entries) or "(none)",
+        "",
+        "## What to do",
+        "Return ONE paragraph of at most %d characters and nothing else: where "
+        "this problem stands now — what it is, where it has got to, what it is "
+        "waiting on. Not a list, not a history. Workers on child threads read "
+        "it and have never seen this thread, so write it for them. If there is "
+        "nothing to say, return exactly: %s" % (DIGEST_MAX, SKIP),
+    ]
+    return "\n".join(parts)
+
+
 def read_guide(node_dir):
     return _read(Path(node_dir) / "guide.md")
 
