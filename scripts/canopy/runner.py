@@ -37,6 +37,30 @@ def runner_env(argv, base=None):
     return env
 
 
+def failure_detail(out, err, limit=1500):
+    """What a failed runner said, in the part that says why.
+
+    Keeping the *head* of the output loses the reason. `codex exec` prints its
+    banner and then echoes the whole prompt — a worker prompt is thousands of
+    characters — so the first 500 characters never reach the error, and three
+    consecutive failures logged the identical string, cut mid-sentence in the
+    prompt. The reason is the last thing printed, so keep the tail.
+
+    Both streams, not `err or out`: codex puts its transcript on stderr and the
+    final message on stdout, and which one carries the failure depends on how
+    far it got. Picking one meant the other was unrecoverable.
+    """
+    parts = []
+    for label, stream in (("stderr", err), ("stdout", out)):
+        text = (stream or "").strip()
+        if not text:
+            continue
+        if len(text) > limit:
+            text = "…" + text[-limit:]
+        parts.append("%s: %s" % (label, text))
+    return "\n".join(parts) or "(no output on either stream)"
+
+
 def _run(argv, prompt, cwd, timeout=None, effects=None):
     """A hung worker holds its node's lock, so every run is time-boxed."""
     from . import effects as effects_mod
@@ -84,7 +108,7 @@ def probe(cfg, effects=None):
         raise RunnerError(
             "%s exists but will not start (exit %s): %s\nIt runs fine in your "
             "shell only if your PATH has what it needs; cron's does not."
-            % (binary, code, (err or out).strip()[:200]))
+            % (binary, code, failure_detail(out, err, limit=400)))
     return (out or "").strip()
 
 
@@ -144,7 +168,8 @@ def run(cfg, prompt, node_dir, out_file=None, exec_fn=None, timeout=None,
         code, out, err = _run(argv, prompt, node_dir, timeout=timeout,
                               effects=effects)
     if code != 0:
-        raise RunnerError("runner exited %s: %s" % (code, (err or out).strip()[:500]))
+        raise RunnerError("runner exited %s: %s"
+                          % (code, failure_detail(out, err)))
     if wants_file and Path(out_file).exists():
         text = Path(out_file).read_text(encoding="utf-8")
         if text.strip():

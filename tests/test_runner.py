@@ -76,6 +76,34 @@ def test_nonzero_exit_raises_with_stderr(tmp_path):
     assert "boom" in str(exc.value)
 
 
+def test_nonzero_exit_keeps_the_reason_not_the_banner(tmp_path):
+    """The reason is the last thing printed, and codex prints a lot before it.
+
+    Three real failures in a row logged the identical 530-character string,
+    every one of them cut mid-prompt-echo, so what codex actually complained
+    about was gone. Head-truncation is the bug, not the length.
+    """
+    noise = "OpenAI Codex v0.147.0\n" + "You are woken for ONE node. " * 400
+    with pytest.raises(RunnerError) as exc:
+        runner.run({"runner": "codex"}, "P", tmp_path,
+                   exec_fn=lambda a, p, c: (1, "", noise + "\nstream error: 429"))
+    assert "stream error: 429" in str(exc.value)
+    assert "OpenAI Codex v0.147.0" not in str(exc.value)
+
+
+def test_nonzero_exit_keeps_both_streams(tmp_path):
+    """`err or out` made whichever stream lost unrecoverable."""
+    with pytest.raises(RunnerError) as exc:
+        runner.run({"runner": "codex"}, "P", tmp_path,
+                   exec_fn=lambda a, p, c: (1, "half an answer", "died here"))
+    message = str(exc.value)
+    assert "died here" in message and "half an answer" in message
+
+
+def test_failure_detail_says_so_when_there_was_no_output():
+    assert "no output" in runner.failure_detail("", "   ")
+
+
 # -- the project's short id ---------------------------------------------------
 
 def test_shortid_accepts_a_clean_answer():
