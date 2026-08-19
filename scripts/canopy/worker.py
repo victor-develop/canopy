@@ -247,6 +247,7 @@ def run_light(ctx, proj_id, nid, messages, out_file=None, run=None):
         messages,
         guide_text=prompts.read_guide(node_dir),
         recent_entries=recent,
+        digest=prompts.read_digest(node_dir),
     )
     answer = ((run or runner_mod.run)(ctx.cfg, prompt, node_dir,
                                       out_file=out_file,
@@ -316,8 +317,10 @@ def recalibrate(ctx, proj_id, nid, chunk_size=80, out_file=None, run=None):
     # heavy path left it exactly as stale as it found it.
     digest = ""
     if notes:
+        opening = (history[0].get("text") or "") if history else ""
         answer = ((run or runner_mod.run)(
-            ctx.cfg, prompts.digest_prompt(state, base, notes, guide_text=guide),
+            ctx.cfg, prompts.digest_prompt(state, base, notes, guide_text=guide,
+                                           opening=opening),
             node_dir, out_file=out_file, effects=ctx.effects) or "").strip()
         if answer and answer != SKIP:
             digest = prompts.write_digest(node_dir, _last_line(answer))

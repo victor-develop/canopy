@@ -460,3 +460,22 @@ def test_a_failed_summarizer_holds_the_cursor(ctx, slack, tracked):
 
     tick_mod.tick(ctx, run=fake_run)
     assert state_of(ctx, tracked)["cursor"] == state["cursor"]
+
+
+def test_the_summarizer_sees_the_digest_it_is_rewriting(ctx, slack, tracked):
+    """Rewriting "from scratch" while seeing only the increment would throw away
+    everything still true and leave a digest describing three messages."""
+    from canopy import prompts
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    prompts.write_digest(ctx.node_dir(proj_id, nid), "支付超时,正在查慢查询")
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "DBA 说索引没问题")
+    seen = []
+
+    def fake_run(cfg, prompt, node_dir, out_file=None, **kw):
+        seen.append(prompt)
+        return "CHECKPOINT: SKIP\nDIGEST: 支付超时,索引已排除,继续查"
+
+    tick_mod.tick(ctx, run=fake_run)
+    assert "正在查慢查询" in seen[0]
+    assert "rewrite it, do not append" in seen[0]

@@ -47,7 +47,20 @@ SUMMARY_CONTRACT = (
     "short enough to stay true — a digest that grows is a second feed."
 ) % (DIGEST_MAX,)
 
+DIGEST_CONTRACT = (
+    "Return ONE paragraph of at most %d characters and nothing else: what this "
+    "problem IS, where it has got to, and what it is waiting on — in that "
+    "order, and lead with what it is. Not a list, not a history, and no "
+    "phase-labels like \"now in the validation stage\": say the actual thing. "
+    "Name people by role or leave them out; never copy a raw Slack id like "
+    "`<@U12345>` — a reader of this has no way to resolve it. Workers on child "
+    "threads read this and have never seen the thread, so write it for them. "
+    "If there is genuinely nothing to say, return exactly: %s"
+) % (DIGEST_MAX, "SKIP")
+
 SKIP = "SKIP"
+
+MENTION = re.compile(r"<@[A-Z0-9]+>|(?<![A-Za-z0-9])[UW][A-Z0-9]{6,}(?![A-Za-z0-9])")
 
 
 def _messages_block(messages):
@@ -98,8 +111,17 @@ def parse_summary(answer):
 
 
 def shorten_digest(text, limit=DIGEST_MAX):
-    """A digest that grows is a second feed, so the cap is enforced here too."""
-    text = " ".join((text or "").split())
+    """A digest that grows is a second feed, so the cap is enforced here too.
+
+    Raw Slack ids are stripped as a backstop: the contract above asks for roles
+    instead, but the model only ever sees `<@U018KSR9C14>` in the messages, and
+    the first real digest copied two of them straight through. Downstream this
+    string is injected into another worker's prompt, where an id resolves to
+    nothing at all.
+    """
+    text = MENTION.sub("", text or "")
+    text = " ".join(text.split())
+    text = re.sub(r"\s+([,，。;；:：])", r"\1", text)
     if len(text) <= limit:
         return text
     return text[:limit].rstrip() + "…"
@@ -143,7 +165,7 @@ def worker_prompt(state, profile_text, messages, guide_text="", agent="canopy",
 
 
 def summarizer_prompt(state, base_prompt, messages, guide_text="",
-                      recent_entries=None):
+                      recent_entries=None, digest=""):
     parts = [
         base_prompt.strip() or "You maintain a checkpoint feed for one node.",
         "",
@@ -153,6 +175,12 @@ def summarizer_prompt(state, base_prompt, messages, guide_text="",
     if guide_text.strip():
         parts += ["", "## Standing guidance (what to record, what to skip)",
                   guide_text.strip()]
+    if digest.strip():
+        # Rewriting "from scratch" while seeing only the increment would throw
+        # away everything still true about the problem and leave a digest that
+        # describes the last three messages.
+        parts += ["", "## The digest as it stands — rewrite it, do not append",
+                  digest.strip()]
     if recent_entries:
         parts += ["", "## Checkpoints already recorded (do not repeat them)",
                   "\n".join(recent_entries[-10:])]
@@ -194,7 +222,7 @@ def recalibrate_prompt(state, base_prompt, chunk, previous_notes=None,
     return "\n".join(parts)
 
 
-def digest_prompt(state, base_prompt, entries, guide_text=""):
+def digest_prompt(state, base_prompt, entries, guide_text="", opening=""):
     """One last small call after a rebuild: the checkpoints, boiled to a state.
 
     `recalibrate` is the other way a feed comes into existence, so without this
@@ -210,17 +238,20 @@ def digest_prompt(state, base_prompt, entries, guide_text=""):
     ]
     if guide_text.strip():
         parts += ["", "## Standing guidance", guide_text.strip()]
+    if opening.strip():
+        # Checkpoints record progress, so the message that stated the problem
+        # earns none — and a digest built from checkpoints alone came out as
+        # "now in the feedback-validation phase", which tells a child node
+        # nothing about what is being validated.
+        parts += ["", "## How this thread opened (the problem itself)",
+                  opening.strip()]
     parts += [
         "",
         "## Every checkpoint recorded for this node, oldest first",
         "\n".join(entries) or "(none)",
         "",
         "## What to do",
-        "Return ONE paragraph of at most %d characters and nothing else: where "
-        "this problem stands now — what it is, where it has got to, what it is "
-        "waiting on. Not a list, not a history. Workers on child threads read "
-        "it and have never seen this thread, so write it for them. If there is "
-        "nothing to say, return exactly: %s" % (DIGEST_MAX, SKIP),
+        DIGEST_CONTRACT,
     ]
     return "\n".join(parts)
 

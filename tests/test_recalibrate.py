@@ -113,3 +113,23 @@ def test_recalibrate_leaves_the_digest_alone_when_there_is_nothing_to_say(
     # Every chunk skipped: no checkpoints, so no digest call and no clobbering.
     assert result["checkpoints"] == 0 and result["digest"] is False
     assert prompts.read_digest(ctx.node_dir(proj_id, nid)) == "先前写好的现状"
+
+
+def test_the_digest_is_told_how_the_thread_opened(ctx, slack, tracked):
+    """Checkpoints record progress, so the message stating the problem earns
+    none — and a digest built from checkpoints alone came out as "now in the
+    feedback-validation phase", which says nothing about what is being
+    validated."""
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    state = store.load_state(ctx.dh, proj_id, nid)
+    seed_history(slack, state, 3)
+    seen = []
+
+    def fake_run(cfg, prompt, node_dir, out_file=None, **kw):
+        seen.append(prompt)
+        return "结论一句"
+
+    worker.recalibrate(ctx, proj_id, nid, chunk_size=10, run=fake_run)
+    digest_call = [p for p in seen if "Every checkpoint recorded" in p][0]
+    assert "How this thread opened" in digest_call
+    assert "支付超时" in digest_call        # the tracked root's opening message

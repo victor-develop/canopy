@@ -90,3 +90,18 @@ def test_shorten_digest_caps_and_marks_the_cut():
     from canopy import prompts
     got = prompts.shorten_digest("啊" * 900)
     assert len(got) <= prompts.DIGEST_MAX + 1 and got.endswith("…")
+
+
+def test_the_digest_never_carries_a_raw_slack_id():
+    """The first real digest copied `<@U018KSR9C14>` straight through. It gets
+    injected into another worker's prompt, where an id resolves to nothing."""
+    from canopy import prompts
+    got = prompts.shorten_digest("结论是 <@U018KSR9C14> 再试试，UD9S8GBRR 去问前端。")
+    assert "U018KSR9C14" not in got and "UD9S8GBRR" not in got
+    assert "再试试" in got and "去问前端" in got
+
+
+def test_shorten_digest_keeps_ordinary_words():
+    from canopy import prompts
+    got = prompts.shorten_digest("UX 和 QA 都同意了")
+    assert got == "UX 和 QA 都同意了"
