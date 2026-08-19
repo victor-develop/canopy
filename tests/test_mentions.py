@@ -105,3 +105,16 @@ def test_shorten_digest_keeps_ordinary_words():
     from canopy import prompts
     got = prompts.shorten_digest("UX 和 QA 都同意了")
     assert got == "UX 和 QA 都同意了"
+
+
+def test_the_history_command_is_absolute_when_the_config_resolved_it():
+    """cron's PATH is minimal, and the worker inherits it."""
+    from canopy import prompts
+    got = prompts.history_hint({"channel": "C1", "thread_ts": "1.0"},
+                               slack_cli="/Users/x/.local/bin/slackcli")
+    assert got.startswith("/Users/x/.local/bin/slackcli conversations read C1")
+
+
+def test_the_digest_contract_demands_the_identifiers():
+    from canopy import prompts
+    assert "identifiers cannot be missing" in prompts.DIGEST_CONTRACT

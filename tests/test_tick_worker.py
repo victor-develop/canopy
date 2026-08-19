@@ -479,3 +479,55 @@ def test_the_summarizer_sees_the_digest_it_is_rewriting(ctx, slack, tracked):
     tick_mod.tick(ctx, run=fake_run)
     assert "正在查慢查询" in seen[0]
     assert "rewrite it, do not append" in seen[0]
+
+
+# -- what a woken worker remembers, and how it looks the rest up ---------------
+
+def test_a_worker_is_given_its_own_digest(ctx, slack, tracked):
+    """The digest flowed *down* to children and nowhere else, so a woken worker
+    knew the parent problem and nothing about what it had itself concluded
+    twenty minutes earlier."""
+    from canopy import prompts
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    prompts.write_digest(ctx.node_dir(proj_id, nid),
+                         "在把原型流程做成 skill,repo 是 victor-develop/llm-ready")
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "@canopy 那你开个 PR 吧")
+    seen = []
+
+    def fake_run(cfg, prompt, node_dir, out_file=None, **kw):
+        seen.append(prompt)
+        return "开好了"
+
+    tick_mod.tick(ctx, run=fake_run)
+    worker_prompt = [p for p in seen if "This node so far" in p][0]
+    assert "victor-develop/llm-ready" in worker_prompt
+
+
+def test_a_worker_is_told_the_command_that_reads_the_thread(ctx, slack, tracked):
+    """"the history is in Slack" is not actionable: the first version of that
+    instruction cost a round trip in which the agent asked for a repo URL the
+    owner had pasted eleven messages earlier."""
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "@canopy 那个 repo 你看了吗")
+    seen = []
+    tick_mod.tick(ctx, run=lambda cfg, prompt, *a, **k:
+                  (seen.append(prompt), "看了")[1])
+    worker_prompt = [p for p in seen if "How to read this thread" in p][0]
+    assert "conversations read %s --thread-ts %s" % (state["channel"],
+                                                    state["thread_ts"]) \
+        in worker_prompt
+
+
+def test_the_worker_is_told_to_look_rather_than_ask_again(ctx, slack, tracked):
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "@canopy 就用那个 repo")
+    seen = []
+    tick_mod.tick(ctx, run=lambda cfg, prompt, *a, **k:
+                  (seen.append(prompt), "好")[1])
+    focus = seen[0]
+    assert "read this thread's history yourself" in focus
+    # Cross-node reads keep the old rule: ask the owner first.
+    assert "ask this node's owner first" in focus

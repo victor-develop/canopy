@@ -15,13 +15,32 @@ DIGEST_MAX = 400
 
 FOCUS = (
     "You are woken for ONE node of a problem tree — one Slack thread, one "
-    "sub-problem. Stay on it. You are reading only the messages that arrived "
-    "since the last checkpoint, plus a short digest of where the parent problem "
-    "stands. That is deliberate: do not invent or assume the rest of the "
-    "history. The full thread is a Slack link away (`raw_permalink` below, and "
-    "the parent's link if there is one) — if you genuinely need it, say so in "
-    "your reply and ask the node's owner first."
+    "sub-problem. Stay on it. What you are handed is the increment: the "
+    "messages since the last checkpoint, a digest of this node, and a digest of "
+    "the parent problem. Everything older is still in Slack.\n"
+    "\n"
+    "**Go and read it when you need it.** If the new messages point at "
+    "something you cannot see — \"this repo\", \"that PR\", \"the link I "
+    "sent\", a decision \"we agreed\" — read this thread's history yourself "
+    "before you answer. Asking someone to repeat what they already typed in "
+    "this very thread is the one answer that is never acceptable.\n"
+    "\n"
+    "Reading *another* node's raw thread is different: say so in your reply and "
+    "ask this node's owner first. And never invent history you did not read."
 )
+
+
+def history_hint(state, slack_cli="slackcli", limit=200):
+    """The exact command, because "the history is in Slack" is not actionable.
+
+    A worker told only that it *may* read the thread asks the human instead —
+    the first version of this instruction cost a round trip in which the agent
+    asked for a GitHub repo the owner had pasted eleven messages earlier.
+    """
+    if not state.get("channel") or not state.get("thread_ts"):
+        return ""
+    return ("%s conversations read %s --thread-ts %s --limit %d"
+            % (slack_cli, state["channel"], state["thread_ts"], limit))
 
 REPLY_CONTRACT = (
     "Your final message is what gets posted to the thread, verbatim, prefixed "
@@ -53,9 +72,15 @@ DIGEST_CONTRACT = (
     "order, and lead with what it is. Not a list, not a history, and no "
     "phase-labels like \"now in the validation stage\": say the actual thing. "
     "Name people by role or leave them out; never copy a raw Slack id like "
-    "`<@U12345>` — a reader of this has no way to resolve it. Workers on child "
-    "threads read this and have never seen the thread, so write it for them. "
-    "If there is genuinely nothing to say, return exactly: %s"
+    "`<@U12345>` — a reader of this has no way to resolve it.\n"
+    "KEEP THE HARD FACTS even if the prose suffers for it: repository and PR "
+    "URLs, file paths, branch names, product and service names, numbers. Those "
+    "are the parts nobody can re-derive — a digest that says \"deciding how to "
+    "prototype\" without naming the repo has dropped the one thing the next "
+    "reader actually needed. Prose can be rough; identifiers cannot be missing."
+    "\n"
+    "Workers on child threads read this and have never seen the thread, so "
+    "write it for them. If there is genuinely nothing to say, return exactly: %s"
 ) % (DIGEST_MAX, "SKIP")
 
 SKIP = "SKIP"
@@ -138,7 +163,7 @@ def upstream_block(parent_state, digest):
 
 
 def worker_prompt(state, profile_text, messages, guide_text="", agent="canopy",
-                  upstream=None):
+                  upstream=None, digest="", slack_cli="slackcli"):
     parts = [
         FOCUS,
         "",
@@ -148,6 +173,15 @@ def worker_prompt(state, profile_text, messages, guide_text="", agent="canopy",
         "## This node",
         node_block(state),
     ]
+    command = history_hint(state, slack_cli=slack_cli)
+    if command:
+        parts += ["", "## How to read this thread's older messages",
+                  "```\n%s\n```" % command]
+    if digest.strip():
+        # Its own memory. The digest was wired to flow *down* to children and
+        # nowhere else, so a woken worker knew what the parent problem was and
+        # nothing about what it had itself concluded twenty minutes earlier.
+        parts += ["", "## This node so far", digest.strip()]
     if upstream and upstream.strip():
         parts += ["", "## Upstream — the parent problem, as it stands now",
                   upstream.strip()]
