@@ -40,7 +40,7 @@ def test_track_registers_cron_and_prints_links(cli_env, capsys, monkeypatch):
                         lambda argv: 4242)
 
     code = run(["track", "https://example.slack.com/archives/C0PAY/p1699000001000100",
-                "--title", "支付超时", "--project", "pay"])
+                "--title", "支付超时", "--project", "pay", "--no-recalibrate"])
     assert code == 0
     out = capsys.readouterr().out
     assert "tracked 支付超时 as `pay`" in out
@@ -68,7 +68,8 @@ def track_one(cli_env, project="pay", channel="C0PAY", ts="1699000001.000100",
               title="支付超时"):
     cli_env["slack"].add(channel, ts, ts, "U1", title)
     link = "https://example.slack.com/archives/%s/p%s" % (channel, ts.replace(".", ""))
-    return run(["track", link, "--title", title, "--project", project, "--no-cron"])
+    return run(["track", link, "--title", title, "--project", project,
+                "--no-cron", "--no-recalibrate"])
 
 
 def test_tree_no_arg_is_the_dashboard(cli_env, capsys):
@@ -267,7 +268,7 @@ def test_track_starts_the_viewer_and_opens_it(cli_env, capsys, monkeypatch):
     cli_env["slack"].add("C0PAY", "1699000001.000100", "1699000001.000100", "U1", "支付超时")
 
     run(["track", "https://example.slack.com/archives/C0PAY/p1699000001000100",
-         "--title", "支付超时", "--project", "pay"])
+         "--title", "支付超时", "--project", "pay", "--no-recalibrate"])
 
     assert spawned and spawned[0][-3:] == ["--port", spawned[0][-2], "--no-open"] or True
     assert "serve" in spawned[0]
@@ -319,3 +320,48 @@ def test_project_flag_cannot_escape_the_data_home(cli_env, capsys):
     assert run(["track", "https://example.slack.com/archives/C0PAY/p1699000001000100",
                 "--project", "../../etc/canopy"]) == 1
     assert "plain name" in capsys.readouterr().err
+
+
+def test_track_reads_the_history_it_just_adopted(cli_env, capsys, monkeypatch):
+    """`track` sets the cursor to now, so without this the argument that made
+    the thread worth adopting is never read by anything: the feed opens empty
+    and the digest stays empty — which is what a first child node inherits."""
+    from canopy import prompts, worker
+    slack = cli_env["slack"]
+    slack.add("C0PAY", "1699000001.000100", "1699000001.000100", "U1", "支付超时")
+    slack.add("C0PAY", "1699000001.000100", "1699000002.000100", "U2", "像是慢查询")
+    monkeypatch.setattr(cli.runner_mod, "resolve_path", lambda r: "/abs/codex")
+    monkeypatch.setattr(cli.runner_mod, "probe", lambda cfg, **kw: "ok")
+    monkeypatch.setattr(cli.schedule, "sync", lambda dh, cfg, **kw: None)
+
+    def fake_run(cfg, prompt, node_dir, out_file=None, **kw):
+        if "Every checkpoint recorded" in prompt:
+            return "支付超时在查慢查询,还没有结论。"
+        return "怀疑是慢查询"
+
+    monkeypatch.setattr(cli.worker.runner_mod, "run", fake_run)
+    code = run(["track", "https://example.slack.com/archives/C0PAY/p1699000001000100",
+                "--title", "支付超时", "--project", "pay", "--no-cron"])
+
+    assert code == 0
+    dh = cli_env["dh"]
+    node_dir = dh / "projects" / "pay" / "nodes" / "C0PAY-1699000001.000100"
+    assert "还没有结论" in prompts.read_digest(node_dir)
+    assert "历史" in capsys.readouterr().out
+
+
+def test_track_can_skip_the_history_read(cli_env, monkeypatch):
+    from canopy import prompts
+    slack = cli_env["slack"]
+    slack.add("C0PAY", "1699000001.000100", "1699000001.000100", "U1", "支付超时")
+    monkeypatch.setattr(cli.runner_mod, "resolve_path", lambda r: "/abs/codex")
+    monkeypatch.setattr(cli.runner_mod, "probe", lambda cfg, **kw: "ok")
+    monkeypatch.setattr(cli.schedule, "sync", lambda dh, cfg, **kw: None)
+
+    # No runner stub at all: the recording effects would refuse a subprocess.
+    code = run(["track", "https://example.slack.com/archives/C0PAY/p1699000001000100",
+                "--title", "支付超时", "--project", "pay", "--no-cron",
+                "--no-recalibrate"])
+    assert code == 0
+    node_dir = cli_env["dh"] / "projects" / "pay" / "nodes" / "C0PAY-1699000001.000100"
+    assert prompts.read_digest(node_dir) == ""

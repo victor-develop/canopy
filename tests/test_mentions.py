@@ -49,3 +49,59 @@ def test_untrack_with_a_reason():
 
 def test_track_reopens_a_parked_node():
     assert mentions.parse("@canopy track", "canopy") == ("track", None)
+
+
+# -- the summarizer's two-part answer -----------------------------------------
+
+def test_parse_summary_splits_the_two_lines():
+    from canopy import prompts
+    got = prompts.parse_summary("CHECKPOINT: 决定加索引\nDIGEST: 在查慢查询,等 DBA")
+    assert got["checkpoint"] == "决定加索引"
+    assert got["digest"] == "在查慢查询,等 DBA"
+
+
+def test_parse_summary_keeps_the_digest_when_the_checkpoint_is_skipped():
+    from canopy import prompts
+    got = prompts.parse_summary("CHECKPOINT: SKIP\nDIGEST: 还在吵,没有结论")
+    assert got["checkpoint"] is None
+    assert got["digest"] == "还在吵,没有结论"
+
+
+def test_parse_summary_falls_back_to_a_bare_line():
+    """A model answering in the old one-line shape must still cost a digest,
+    never a checkpoint."""
+    from canopy import prompts
+    got = prompts.parse_summary("决定先加复合索引")
+    assert got["checkpoint"] == "决定先加复合索引" and got["digest"] is None
+
+
+def test_parse_summary_survives_a_code_fence():
+    from canopy import prompts
+    got = prompts.parse_summary("```\nCHECKPOINT: SKIP\nDIGEST: 现状一句话\n```")
+    assert got["digest"] == "现状一句话"
+
+
+def test_parse_summary_of_nothing():
+    from canopy import prompts
+    assert prompts.parse_summary("") == {"checkpoint": None, "digest": None}
+
+
+def test_shorten_digest_caps_and_marks_the_cut():
+    from canopy import prompts
+    got = prompts.shorten_digest("啊" * 900)
+    assert len(got) <= prompts.DIGEST_MAX + 1 and got.endswith("…")
+
+
+def test_the_digest_never_carries_a_raw_slack_id():
+    """The first real digest copied `<@U018KSR9C14>` straight through. It gets
+    injected into another worker's prompt, where an id resolves to nothing."""
+    from canopy import prompts
+    got = prompts.shorten_digest("结论是 <@U018KSR9C14> 再试试，UD9S8GBRR 去问前端。")
+    assert "U018KSR9C14" not in got and "UD9S8GBRR" not in got
+    assert "再试试" in got and "去问前端" in got
+
+
+def test_shorten_digest_keeps_ordinary_words():
+    from canopy import prompts
+    got = prompts.shorten_digest("UX 和 QA 都同意了")
+    assert got == "UX 和 QA 都同意了"

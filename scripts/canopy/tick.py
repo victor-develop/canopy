@@ -48,7 +48,8 @@ def _advance(ctx, proj_id, state, cursor, outcome, batch_start=None):
     step over it and record that it was given up on.
     """
     failed = bool((outcome or {}).get("error")) or any(
-        step.get("error") for step in (outcome or {}).get("steps", []))
+        step.get("error") for step in (outcome or {}).get("steps", [])) or \
+        bool(((outcome or {}).get("summarized") or {}).get("error"))
     retries = dict(state.get("retries") or {})
 
     if not failed:

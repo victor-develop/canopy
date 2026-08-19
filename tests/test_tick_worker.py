@@ -332,3 +332,150 @@ def test_a_question_is_answered_once_even_when_the_batch_retries(ctx, slack,
 
     replies = [p for p in slack.posted if "我的答复" in (p["text"] or "")]
     assert len(replies) == 1
+
+
+# -- the node digest: short, current, and what a child node inherits -----------
+
+TWO_PART = "CHECKPOINT: 决定先加复合索引\nDIGEST: 支付超时在查慢查询,已定位到订单表,等 DBA 确认索引方案。"
+
+
+def digest_of(ctx, proj_id, nid):
+    from canopy import prompts
+    return prompts.read_digest(ctx.node_dir(proj_id, nid))
+
+
+def test_a_question_also_reaches_the_feed_and_the_digest(ctx, slack, tracked):
+    """The summarizer used to be the `else` of "did anything else happen", so a
+    message carrying an `@agent` question never reached the feed at all — and
+    the cursor moved past it, so it was gone. Every child node lives on exactly
+    that kind of traffic."""
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "@canopy 这个能今天出结论吗")
+
+    def fake_run(cfg, prompt, node_dir, out_file=None, **kw):
+        return TWO_PART if "CHECKPOINT" in prompt else "今天出不了,缺 DBA 确认。"
+
+    tick_mod.tick(ctx, run=fake_run)
+
+    assert any("今天出不了" in (p["text"] or "") for p in slack.posted)
+    segments = feed_mod.load_segments(ctx.node_dir(proj_id, nid))
+    assert "决定先加复合索引" in segments[0]["entries"][0]
+    assert "等 DBA 确认索引方案" in digest_of(ctx, proj_id, nid)
+
+
+def test_a_pure_command_batch_still_costs_no_llm(ctx, slack, tracked):
+    """`fork` / `guide:` / `untrack` are executed as code and carry no
+    conversation, so there is nothing to summarize and nothing to pay for."""
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "@canopy fork 慢查询定位")
+    tick_mod.tick(ctx, run=no_llm)
+    assert digest_of(ctx, proj_id, nid) == ""
+
+
+def test_the_digest_is_rewritten_not_appended(ctx, slack, tracked):
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "先看看索引")
+    tick_mod.tick(ctx, run=lambda *a, **k: "CHECKPOINT: SKIP\nDIGEST: 第一版现状")
+    add_msg(slack, state, "1700001001.000100", "U2", "DBA 回了")
+    tick_mod.tick(ctx, run=lambda *a, **k: "CHECKPOINT: SKIP\nDIGEST: 第二版现状")
+
+    digest = digest_of(ctx, proj_id, nid)
+    assert "第二版现状" in digest and "第一版" not in digest
+
+
+def test_a_skipped_checkpoint_still_updates_the_digest(ctx, slack, tracked):
+    """"still arguing, nothing settled" is exactly what a child needs, and it
+    is the state that goes stale fastest."""
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "还在吵")
+    results = tick_mod.tick(ctx, run=lambda *a, **k:
+                            "CHECKPOINT: SKIP\nDIGEST: 还在吵方案,没有结论")
+    assert results[0]["outcome"]["appended"] is False
+    assert "还在吵方案" in digest_of(ctx, proj_id, nid)
+
+
+def test_the_digest_is_capped(ctx, slack, tracked):
+    from canopy import prompts
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "聊了很久")
+    tick_mod.tick(ctx, run=lambda *a, **k:
+                  "CHECKPOINT: SKIP\nDIGEST: " + "很长的现状描述 " * 200)
+    assert len(digest_of(ctx, proj_id, nid)) <= prompts.DIGEST_MAX + 1
+
+
+def test_a_child_worker_is_given_the_parents_digest(ctx, slack, tracked):
+    from canopy import prompts
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "@canopy fork 慢查询定位")
+    fork = tick_mod.tick(ctx, run=no_llm)[0]["outcome"]
+    child = fork["node_id"]
+    prompts.write_digest(ctx.node_dir(proj_id, nid),
+                         "支付超时在查慢查询,等 DBA 确认索引方案。")
+
+    child_state = store.load_state(ctx.dh, proj_id, child)
+    add_msg(slack, child_state, "1700002000.000100", "U5",
+            "@canopy 你从 DBA 角度看呢")
+    seen = []
+
+    def fake_run(cfg, prompt, node_dir, out_file=None, **kw):
+        seen.append(prompt)
+        return "先看执行计划。"
+
+    tick_mod.tick(ctx, run=fake_run)
+    worker_prompt = [p for p in seen if "Upstream" in p][0]
+    assert "等 DBA 确认索引方案" in worker_prompt
+    # And the link, so the owner can send it to read the whole parent thread.
+    assert state["raw_permalink"] in worker_prompt
+
+
+def test_no_upstream_block_when_the_parent_has_no_digest_yet(ctx, slack, tracked):
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "@canopy fork 慢查询定位")
+    child = tick_mod.tick(ctx, run=no_llm)[0]["outcome"]["node_id"]
+    child_state = store.load_state(ctx.dh, proj_id, child)
+    add_msg(slack, child_state, "1700002000.000100", "U5", "@canopy 看法?")
+    seen = []
+    tick_mod.tick(ctx, run=lambda cfg, prompt, *a, **k: (seen.append(prompt), "ok")[1])
+    # No invented context, no stale context: the worker says it lacks it.
+    assert not any("Upstream" in p for p in seen)
+
+
+def test_a_failed_summarizer_holds_the_cursor(ctx, slack, tracked):
+    """It rides along with the reply now, so its failure has to count as one."""
+    from canopy.errors import RunnerError
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "@canopy 这个怎么办")
+
+    def fake_run(cfg, prompt, node_dir, out_file=None, **kw):
+        if "CHECKPOINT" in prompt:
+            raise RunnerError("runner exited 1")
+        return "我的答复"
+
+    tick_mod.tick(ctx, run=fake_run)
+    assert state_of(ctx, tracked)["cursor"] == state["cursor"]
+
+
+def test_the_summarizer_sees_the_digest_it_is_rewriting(ctx, slack, tracked):
+    """Rewriting "from scratch" while seeing only the increment would throw away
+    everything still true and leave a digest describing three messages."""
+    from canopy import prompts
+    proj_id, nid = tracked["proj_id"], tracked["node_id"]
+    prompts.write_digest(ctx.node_dir(proj_id, nid), "支付超时,正在查慢查询")
+    state = state_of(ctx, tracked)
+    add_msg(slack, state, "1700001000.000100", "U2", "DBA 说索引没问题")
+    seen = []
+
+    def fake_run(cfg, prompt, node_dir, out_file=None, **kw):
+        seen.append(prompt)
+        return "CHECKPOINT: SKIP\nDIGEST: 支付超时,索引已排除,继续查"
+
+    tick_mod.tick(ctx, run=fake_run)
+    assert "正在查慢查询" in seen[0]
+    assert "rewrite it, do not append" in seen[0]
