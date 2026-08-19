@@ -27,7 +27,7 @@ def test_an_entry_is_one_line_of_content(ctx, tracked):
     ops.append_checkpoint(ctx, proj_id, nid, "决定先加索引", author="E君",
                           raw_permalink="https://x/p1")
     text = entries_of(ctx, proj_id, nid)[0]["entries"][0]
-    assert text == "• 决定先加索引"
+    assert text == "    • 决定先加索引"          # indented under the header
 
 
 def test_full_segment_is_sealed_and_a_new_one_opens(ctx, slack, tracked):

@@ -162,3 +162,20 @@ def test_the_digest_is_pinnable_at_a_glance(repo):
                 (repo / "templates" / "messages" / locale / name)
                 .read_text(encoding="utf-8"))[1]
             assert "📌" in body
+
+
+def test_the_header_is_bold_and_the_rows_are_indented_under_it(repo):
+    """Slack's proportional font gives a plain header no weight of its own: the
+    title line and the bullets under it landed on the same left edge and read as
+    one flat list."""
+    for locale in ("zh", "en"):
+        directory = repo / "templates" / "messages" / locale
+        for name in ("feed-root.md", "feed-fork.md", "feed-segment.md",
+                     "tree-map.md", "tree-map-more.md"):
+            body = templates.parse((directory / name).read_text(encoding="utf-8"))[1]
+            header = body.strip().splitlines()[1]        # line 0 is the rule
+            assert header.count("*") >= 2, "%s/%s is not bold" % (locale, name)
+
+        entry = templates.parse(
+            (directory / "feed-entry.md").read_text(encoding="utf-8"))[1]
+        assert entry.strip("\n").startswith("    •"), locale
