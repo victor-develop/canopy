@@ -71,7 +71,9 @@ def render_body(tree, seg, render, states=None, permalink=None,
     for nid, depth, pointer in seg["rows"]:
         node = tree.node(nid)
         state = states.get(nid) or {}
-        indent = INDENT * depth
+        # +1: even the root row sits one level in, so the header above it is
+        # read as a header and not as the first item of the list.
+        indent = INDENT * (depth + 1)
         alias = alias_map[nid]
         title = node.get("title") or nid
 

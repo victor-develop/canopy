@@ -68,7 +68,7 @@ def test_a_row_carries_the_alias_the_digest_and_the_thread(repo):
                                                 "feed_ts": ["1.0"]}},
                                permalink=lambda ch, ts: "https://x/feed")
     row = [l for l in body.splitlines() if "慢查询" in l][0]
-    assert row.startswith("    ◦ `1.a` 慢查询")
+    assert row.startswith("        ◦ `1.a` 慢查询")
     assert "[<https://x/feed|智能摘要>] [<https://x/p1|全文>]" in row
     # Owner, counts and lock state are deliberately absent: this message is only
     # re-rendered when the tree changes shape, so live fields would go stale.
@@ -86,3 +86,20 @@ def test_an_untracked_node_is_marked_but_kept(repo):
                                permalink=lambda ch, ts: "https://x/feed")
     row = [l for l in body.splitlines() if "旧方向" in l][0]
     assert row.strip().startswith("× `1.a`")
+
+
+def test_even_the_root_row_sits_under_the_header(repo):
+    """Slack draws the header and a flush-left first row at the same left edge,
+    so the map read as a flat list with a caption on top."""
+    tree = store.Tree.new("pay", "C1-0", "支付超时", "A君")
+    tree.add_child("C1-0", "C1-1", "慢查询")
+    body = treemap.render_body(tree, treemap.segments(tree)[0], fake_render(repo),
+                               permalink=lambda ch, ts: "https://x/feed")
+    root_row, child_row = body.splitlines()[:2]
+    assert root_row.startswith("    • `1` 支付超时")
+    # And each level is still one step further in than its parent.
+    assert _lead(child_row) == _lead(root_row) + 4
+
+
+def _lead(line):
+    return len(line) - len(line.lstrip(" "))
