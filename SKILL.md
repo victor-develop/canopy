@@ -276,10 +276,26 @@ and a copy taken once is a second version of the truth that nothing maintains.
 An empty parent digest yields no block at all — the worker then says it lacks
 context, which is honest, rather than being handed something stale.
 
-Canopy stores no transcript. Raw history stays in Slack, and every node carries
-`raw_permalink` (its own thread) plus, in the upstream block, the parent's — so
-a worker that genuinely needs the whole argument can be sent to read it. It
-**asks the node's owner first**; it does not go wandering up the tree on its own.
+**A worker also gets its own node's digest.** The digest was first wired to flow
+*down* to children and nowhere else, which produced a worker that knew what the
+parent problem was and nothing about what it had itself concluded twenty minutes
+earlier — it answered "please tell me which repo" to an owner who had pasted the
+repo URL eleven messages up the same thread.
+
+**And it reads the rest of the thread itself.** Canopy stores no transcript:
+Slack is the source of truth, a local copy drifts the moment anyone edits or
+deletes, and its coverage would be only as good as the ticks that happened to
+run. Instead the prompt carries the exact command —
+`slackcli conversations read <channel> --thread-ts <ts>` — and an instruction to
+use it whenever the increment points at something the worker cannot see ("this
+repo", "that PR", "the link I sent"). Telling a worker the history *exists*
+is not enough; the first version said exactly that and the worker asked the human
+instead, which is the one answer that is never acceptable — the person already
+typed it.
+
+Reading *another* node's raw thread stays gated: the worker says so in its reply
+and **asks this node's owner first**. It does not go wandering up the tree on its
+own, and it never invents history it did not read.
 
 ### Loop B — checkpoint feed, and the digest beside it
 

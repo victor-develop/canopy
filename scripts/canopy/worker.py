@@ -224,6 +224,9 @@ def run_full(ctx, proj_id, nid, messages, agent, out_file=None, run=None):
         guide_text=prompts.read_guide(node_dir),
         agent=agent,
         upstream=upstream_for(ctx, proj_id, state),
+        digest=prompts.read_digest(node_dir),
+        slack_cli=(ctx.cfg.get("slack_cli_path")
+                   or ctx.cfg.get("slack_cli") or "slackcli"),
     )
     answer = (run or runner_mod.run)(ctx.cfg, prompt, node_dir, out_file=out_file,
                                      effects=ctx.effects)
