@@ -5,6 +5,11 @@ from .store import read_json, write_json
 
 DEFAULTS = {
     "cron_interval_minutes": 5,
+    # Who wakes the tick. "cron" installs and removes a crontab line as the
+    # tree changes; "none" hands that job to something outside canopy (see
+    # `canopy loop`) and makes `schedule.sync` a no-op, so an external
+    # scheduler's own ticks cannot quietly reinstall the crontab line.
+    "schedule_backend": "cron",
     "locale": "zh",
     "default_agent": "canopy",
     "runner": "codex",

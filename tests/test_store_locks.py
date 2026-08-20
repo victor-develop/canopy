@@ -112,3 +112,26 @@ def test_truncated_lock_holds_until_it_goes_stale(tmp_path):
     locks.lock_path(tmp_path).write_text("{oh no", encoding="utf-8")
     assert locks.is_held(tmp_path, now=100, stale_after=1800)
     assert not locks.is_held(tmp_path, now=3600, stale_after=1800)
+
+
+# -- the loop's singleton lock -------------------------------------------------
+
+def test_refresh_restamps_without_releasing(tmp_path):
+    """Release-then-reacquire has a window, and a long-lived holder would open
+    it on every iteration."""
+    from canopy import locks
+    locks.acquire(tmp_path, pid=4242, now=1000.0)
+    locks.refresh(tmp_path, pid=4242, now=9000.0)
+    info = locks.read(tmp_path)
+    assert info["pid"] == 4242 and info["started"] == 9000.0
+
+
+def test_a_refreshed_lock_stays_held_past_max_age(tmp_path):
+    """MAX_AGE exists to defend against recycled pids, but a loop legitimately
+    runs for days — so it restamps instead of ageing out."""
+    from canopy import locks
+    locks.acquire(tmp_path, pid=4242, now=1000.0)
+    alive = lambda pid: True
+    assert not locks.is_held(tmp_path, now=1000.0 + 7 * 3600, alive=alive)
+    locks.refresh(tmp_path, pid=4242, now=1000.0 + 7 * 3600)
+    assert locks.is_held(tmp_path, now=1000.0 + 7 * 3600 + 60, alive=alive)

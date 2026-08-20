@@ -33,7 +33,17 @@ def has_active(dh):
 
 
 def sync(dh, cfg, run=None, tick_cmd=None):
-    """-> INSTALLED | REMOVED | UNCHANGED."""
+    """-> INSTALLED | REMOVED | UNCHANGED.
+
+    `schedule_backend: none` means somebody else owns the waking. Every tick
+    calls this (an `@canopy untrack` in Slack can retire the last node, and the
+    entry that woke us should go with it) — so without this early return, the
+    first tick of an external scheduler reinstalls the crontab line it was
+    started to replace, and the tree gets woken twice a minute by two
+    schedulers.
+    """
+    if (cfg.get("schedule_backend") or "cron") != "cron":
+        return UNCHANGED
     wanted = has_active(dh)
     present = cron.installed(run=run)
     if wanted and not present:

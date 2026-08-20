@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -285,3 +286,20 @@ def test_recording_effects_report_what_was_attempted():
     assert rec.calls[0]["argv"] == ["crontab", "-l"]
     rec.open_url("http://127.0.0.1:1/")
     assert rec.opened == ["http://127.0.0.1:1/"]
+
+
+def test_no_cron_line_when_something_else_owns_the_waking():
+    """Every tick calls sync, so without this an external scheduler's own first
+    tick reinstalls the crontab line it was started to replace — and the tree
+    gets woken twice a minute by two schedulers."""
+    from canopy import schedule
+    calls = []
+    outcome = schedule.sync(Path("/nope"), {"schedule_backend": "none"},
+                            run=lambda *a, **k: calls.append(a) or (0, "", ""))
+    assert outcome == schedule.UNCHANGED
+    assert calls == []
+
+
+def test_the_cron_backend_is_still_the_default():
+    from canopy import config
+    assert config.DEFAULTS["schedule_backend"] == "cron"

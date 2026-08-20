@@ -39,6 +39,15 @@ def messages_dir(dh, locale):
     return Path(dh) / "messages" / locale
 
 
+def scheduler_dir(dh):
+    """Where `canopy loop` keeps its singleton lock.
+
+    Not the data home itself: that already holds the per-tick lock, and a loop
+    holding that one would block the very ticks it exists to run.
+    """
+    return Path(dh) / "scheduler"
+
+
 def projects_dir(dh):
     return Path(dh) / "projects"
 
