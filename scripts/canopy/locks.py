@@ -83,6 +83,22 @@ def acquire(node_dir, pid=None, now=None, stale_after=1800, alive=None,
     return payload
 
 
+def refresh(node_dir, pid=None, now=None):
+    """Restamp a lock you already hold. -> the payload written.
+
+    Only the holder calls this. Releasing and re-acquiring would work too,
+    except for the window in between — which is exactly when a second holder
+    slips in, and a long-lived holder (`canopy loop`) would open that window on
+    every iteration.
+    """
+    node_dir = Path(node_dir)
+    node_dir.mkdir(parents=True, exist_ok=True)
+    payload = {"pid": pid if pid is not None else os.getpid(),
+               "started": time.time() if now is None else now}
+    lock_path(node_dir).write_text(json.dumps(payload), encoding="utf-8")
+    return payload
+
+
 def release(node_dir, pid=None):
     """Only ever remove your own lock.
 

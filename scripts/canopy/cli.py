@@ -3,15 +3,17 @@
 import argparse
 import json
 import os
+import signal
 import sys
+import time
 from pathlib import Path
 
 from . import config as config_mod
-from . import cron, events, noderef, ops, opsview, paths
+from . import cron, events, locks, noderef, ops, opsview, paths
 from . import runner as runner_mod, schedule, webserve
 from . import store, templates, tick as tick_mod, treemap as treemap_mod
 from . import treeview, worker
-from .errors import CanopyError, NodeRefError
+from .errors import CanopyError, LockedError, NodeRefError
 
 
 def _ctx(args):
@@ -370,18 +372,13 @@ def cmd_reply(args):
     return 0
 
 
-def cmd_tick(args):
-    """One tick. Always leaves a line in tick.log — including when it dies.
-
-    cron mails a traceback to a local mailbox nobody reads; the first real bug
-    here (slackcli missing from cron's PATH) sat in that mailbox through several
-    ticks. A log next to the state is where someone will actually look.
-    """
-    ctx = _ctx(args)
+def _one_tick(ctx, args=None):
+    """One tick plus its log line. Shared by `tick` and `loop`."""
     try:
         results = tick_mod.tick(ctx)
         # An `@canopy untrack` typed in Slack can retire the last active node;
-        # the entry that just woke us should go with it.
+        # the entry that just woke us should go with it. A no-op unless the
+        # cron backend is the one in charge.
         schedule.sync(ctx.dh, ctx.cfg)
     except Exception as exc:
         _log_tick(ctx.dh, "ERROR %s: %s" % (type(exc).__name__, exc))
@@ -391,6 +388,94 @@ def cmd_tick(args):
         summary[row.get("verdict")] = summary.get(row.get("verdict"), 0) + 1
     _log_tick(ctx.dh, " ".join("%s=%d" % kv for kv in sorted(summary.items()))
               or "nothing tracked")
+    return results
+
+
+def cmd_loop(args):
+    """Wake the tick from a process of our own, one tick at a time.
+
+    Why this exists: cron on macOS runs outside your login session, so a runner
+    whose credentials live in the Keychain (`claude` does) fails there with
+    "Not logged in" while working perfectly in a terminal. A loop you start
+    yourself inherits the session, and the runner works.
+
+    Two properties it has to have, both learned from what cron does badly:
+
+    - **Sequential.** `tick; sleep N` cannot overlap with itself, where cron
+      fires on the clock whether the last one finished or not.
+    - **Singleton.** Starting a second loop by accident — another terminal,
+      another agent session — is the easy mistake, so the loop takes a lock in
+      the data home and a second one refuses to start and says which pid holds
+      it. The lock is rewritten every iteration, so a live loop keeps it for as
+      long as it runs while a dead one is broken on the next attempt (the pid
+      is gone) rather than after a timeout.
+
+    It is not a substitute for cron's durability: nothing restarts this after a
+    reboot. The ops page is what makes that survivable — its elapsed counters
+    run in the browser, so a stopped scheduler shows up as a number climbing
+    into the red rather than as a page that looks calm.
+    """
+    ctx = _ctx(args)
+    directory = paths.scheduler_dir(ctx.dh)
+
+    if args.status or args.stop:
+        info = locks.read(directory)
+        if not info or not locks.is_held(directory):
+            print("not running")
+            return 0
+        if args.status:
+            print(json.dumps(info, ensure_ascii=False))
+            return 0
+        os.kill(int(info["pid"]), signal.SIGTERM)
+        print("stopped pid %s" % info["pid"])
+        return 0
+
+    interval = args.interval or int(ctx.cfg.get("cron_interval_minutes", 5)) * 60
+    if interval <= 0:
+        raise CanopyError("--interval must be positive")
+    try:
+        locks.acquire(directory)
+    except LockedError:
+        info = locks.read(directory) or {}
+        raise CanopyError(
+            "a canopy loop is already running (pid %s). Two schedulers would "
+            "walk the same tree twice a minute; stop that one first with "
+            "`canopy loop --stop`." % (info.get("pid"),))
+
+    stop = {"now": False}
+
+    def _bye(signum, frame):
+        stop["now"] = True
+
+    signal.signal(signal.SIGTERM, _bye)
+    signal.signal(signal.SIGINT, _bye)
+    print("loop every %ds (pid %d)" % (interval, os.getpid()))
+    try:
+        while not stop["now"]:
+            _one_tick(ctx, args)
+            # Re-read config each round: an interval change should not need a
+            # restart, and neither should switching the runner.
+            ctx.cfg = config_mod.load(ctx.dh)
+            locks.refresh(directory)
+            for _ in range(interval):
+                if stop["now"]:
+                    break
+                time.sleep(1)
+    finally:
+        locks.release(directory)
+    print("stopped")
+    return 0
+
+
+def cmd_tick(args):
+    """One tick. Always leaves a line in tick.log — including when it dies.
+
+    cron mails a traceback to a local mailbox nobody reads; the first real bug
+    here (slackcli missing from cron's PATH) sat in that mailbox through several
+    ticks. A log next to the state is where someone will actually look.
+    """
+    ctx = _ctx(args)
+    results = _one_tick(ctx, args)
     if args.json:
         print(json.dumps(results, ensure_ascii=False))
     else:
@@ -498,6 +583,13 @@ def build_parser():
     p.add_argument("--text")
     p.add_argument("--agent")
     p.set_defaults(func=cmd_reply)
+
+    p = sub.add_parser("loop", help="wake the tick from a process of our own")
+    p.add_argument("--interval", type=int, help="seconds between ticks")
+    p.add_argument("--status", action="store_true")
+    p.add_argument("--stop", action="store_true")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_loop)
 
     p = sub.add_parser("tick", help="one cron tick")
     p.add_argument("--json", action="store_true")

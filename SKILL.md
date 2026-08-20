@@ -154,6 +154,36 @@ The fork also carries the security hardening from `asdigitos/slackcli#1`
 (credential-bearing requests gated to slack.com hosts, terminal output
 sanitized, update downloads checksum-verified).
 
+## Who wakes the tick — `schedule_backend`
+
+`cron` is the default and installs/removes a crontab line as the tree changes.
+It has one failure that is not about canopy at all: **cron runs outside your
+login session**, so a runner whose credentials live in the macOS Keychain fails
+there. `claude` does — the same command that answers `ok` in a terminal answers
+`Not logged in · Please run /login` from cron, with the credentials file sitting
+right there in `~/.claude`. (`codex` is unaffected: its key comes from an env var
+a shell profile exports, which the login-shell wrapper already supplies.)
+
+So `schedule_backend: none` hands the waking to something outside canopy and
+makes `sync` a no-op. That no-op matters more than it looks: every tick calls
+`sync`, so without it the external scheduler's own first tick reinstalls the
+crontab line it was started to replace, and the tree gets woken twice a minute
+by two schedulers.
+
+`canopy loop` is that something — one process, in your session:
+
+- **Sequential.** `tick; sleep N` cannot overlap itself, where cron fires on the
+  clock whether the last one finished or not.
+- **Singleton.** It takes a lock in the data home; a second loop refuses to start
+  and names the pid holding it. The lock is restamped every iteration, so a live
+  loop keeps it for as long as it runs while a dead one is broken immediately —
+  its pid is gone — rather than after a timeout.
+
+What it gives up is cron's durability: nothing restarts it after a reboot. The
+ops page is what makes that survivable — its elapsed counters run in the browser
+off the snapshot's timestamps, so a scheduler that has stopped shows up as a
+number climbing into the red, not as a page that looks calm.
+
 ## The ops page — the one process that is allowed to linger
 
 `canopy serve` runs a loopback HTTP server that renders what canopy is doing:

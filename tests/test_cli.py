@@ -1,3 +1,4 @@
+import os
 """The CLI surface, driven the way a user drives it: argv in, exit code out."""
 
 import json
@@ -365,3 +366,26 @@ def test_track_can_skip_the_history_read(cli_env, monkeypatch):
     assert code == 0
     node_dir = cli_env["dh"] / "projects" / "pay" / "nodes" / "C0PAY-1699000001.000100"
     assert prompts.read_digest(node_dir) == ""
+
+
+def test_a_second_loop_refuses_to_start(cli_env, capsys):
+    """The easy mistake is another terminal, or another agent session."""
+    from canopy import locks, paths
+    dh = cli_env["dh"]
+    locks.acquire(paths.scheduler_dir(dh), pid=os.getpid())
+    assert run(["loop"]) == 1
+    err = capsys.readouterr().err
+    assert "already running" in err and str(os.getpid()) in err
+
+
+def test_loop_status_and_stop_when_nothing_runs(cli_env, capsys):
+    assert run(["loop", "--status"]) == 0
+    assert "not running" in capsys.readouterr().out
+    assert run(["loop", "--stop"]) == 0
+
+
+def test_loop_reports_the_holder(cli_env, capsys):
+    from canopy import locks, paths
+    locks.acquire(paths.scheduler_dir(cli_env["dh"]), pid=os.getpid())
+    assert run(["loop", "--status"]) == 0
+    assert str(os.getpid()) in capsys.readouterr().out
