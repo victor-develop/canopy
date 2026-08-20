@@ -83,8 +83,14 @@ worker 就既发不出 Slack 也推不动自己的 `cursor`,而且不报错。�
 为什么在意:上游 v0.9.0 调 `chat.update` 时没传 `parse=none`,Slack 会把文本转义,
 `<url|label>` 存成 `&lt;url|label&gt;`。feed 每追一条 checkpoint 就编辑一次那条
 消息,所以在没打补丁的 CLI 上,第一条 checkpoint 之后 feed 里的链接全变成字面文字。
-canopy 不会因此崩:把 `slack_cli_escapes_on_edit` 设成 `true`,它会把带标签的链接
-降级成裸 URL(还能点,但标签没了)。用带修复的 CLI 就设成 `false`。
+
+**这件事你不用自己判断。** `canopy track` 第一次跑的时候会拿自己的问题全景图那条消息
+做一次实测:带着 `<url|label>` 编辑一遍,再把 Slack 存下来的文本读回来,看有没有被转义,
+然后把结论写进 `config.json` 的 `slack_cli_escapes_on_edit`,之后的 track 直接用这个
+答案。为什么不看版本号:上游 `main` 的 build 也自称 `0.9.0`,版本号分不出来。
+
+被判定成会转义时,canopy 把带标签的链接降级成 `标签 URL`(还能点,标签变普通文字),
+不会留一串 `&lt;…&gt;`。这个值你也可以手动写死,写了 canopy 就不再实测。
 
 ## 命令
 

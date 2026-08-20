@@ -16,6 +16,7 @@ from . import feed as feed_mod
 from . import events as events_mod
 from . import locks, noderef, paths, shortid, slack as slack_mod, store, templates
 from . import treemap as treemap_mod
+from .errors import SlackError
 
 
 class Ctx(object):
@@ -287,12 +288,58 @@ def track(ctx, link, title=None, owner=None, locale=None, proj_id=None,
 
     state["cursor"] = latest_before
     store.save_state(ctx.dh, proj_id, state)
+    _probe_edit_escaping(ctx, tree)
     _sync_treemap(ctx, tree)
 
     return {"proj_id": proj_id, "node_id": nid, "feed_ts": feed_ts,
             "announce_ts": announce_ts, "tree_permalink": tree_link,
             "title": title}
 
+
+
+def _probe_edit_escaping(ctx, tree):
+    """Does this slackcli eat `<url|label>` when it edits? Ask it, once.
+
+    Upstream slackcli through v0.9.0 omits `parse=none` on `chat.update`, so
+    every edit stores `&lt;url|label&gt;` and the feed's links die — on a call
+    that returns ok. No version string separates a patched CLI from an unpatched
+    one: a build of upstream `main` still calls itself 0.9.0. So rather than
+    asking whoever installs Canopy to know, `track` edits its own tree message
+    once with the labelled links in it, reads back what Slack stored, and writes
+    the answer into `config.json`. Later tracks skip this.
+
+    -> True if it escapes, False if it does not, None if the probe could not
+    tell — in which case nothing is written and the conservative setting stands.
+    """
+    if ctx.cfg.get("slack_cli_escapes_on_edit") is not None:
+        return None                        # answered already, or set by hand
+    if ctx.cfg.get("slack_backend", "slackcli") != "slackcli":
+        return _record_escaping(ctx, False)
+
+    msg = (tree.data.get("tree_msgs") or [None])[0]
+    if not (msg and msg.get("ts")):
+        return None
+
+    ctx.slack.escapes_on_edit = False      # send the markup undegraded, once
+    try:
+        _sync_treemap(ctx, tree)
+        stored = ctx.slack.message(msg["channel"], msg["ts"]) or {}
+    except SlackError:
+        # Could not read it back, so whether that edit survived is unknown.
+        # Leave the setting unanswered; the caller's re-sync degrades the links.
+        ctx.slack.escapes_on_edit = True
+        return None
+    if not stored.get("text"):
+        ctx.slack.escapes_on_edit = True
+        return None
+    return _record_escaping(ctx, slack_mod.links_were_escaped(stored["text"]))
+
+
+def _record_escaping(ctx, escapes):
+    ctx.cfg["slack_cli_escapes_on_edit"] = escapes
+    ctx.slack.escapes_on_edit = escapes
+    config_mod.set_values(ctx.dh, slack_cli_escapes_on_edit=escapes)
+    return escapes
 
 # -- fork ---------------------------------------------------------------------
 

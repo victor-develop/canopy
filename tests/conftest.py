@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -8,19 +9,32 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts"))
 
 from canopy import config as config_mod  # noqa: E402
+from canopy.slack import degrade_links  # noqa: E402
 from canopy import effects as effects_mod  # noqa: E402
 from canopy import ops, paths, store  # noqa: E402
+
+
+LABELLED_LINK = re.compile(r"<([^<>\n]+\|[^<>\n]*)>")
 
 
 class FakeSlack(object):
     """Records every call so tests can assert on what would hit the channel."""
 
-    def __init__(self, thread_messages=None):
+    def __init__(self, thread_messages=None, cli_escapes_on_edit=False):
         self.posted = []
         self.updates = []
         self.reactions = []
         self.threads = dict(thread_messages or {})
         self._counter = 1700000000
+        # Two separate things, in the order they happen for real:
+        # `escapes_on_edit` is canopy's own setting — degrade `<url|label>` to
+        # `label url` before sending, the same knob the real Slack wrapper has
+        # (the track-time probe flips it). `cli_escapes_on_edit` is what an
+        # unpatched slackcli then does to whatever it was handed: `chat.update`
+        # without `parse=none`, so Slack stores `&lt;url|label&gt;`.
+        self.escapes_on_edit = False
+        self.cli_escapes_on_edit = cli_escapes_on_edit
+        self.stored = {}
 
     # -- reads
     def _key(self, channel, thread_ts):
@@ -68,14 +82,24 @@ class FakeSlack(object):
         ts = self._next_ts()
         self.posted.append({"channel": channel, "text": text,
                             "thread_ts": thread_ts, "ts": ts})
+        self.stored[self._key(channel, ts)] = text
         root = thread_ts or ts
         self.threads.setdefault(self._key(channel, root), []).append(
             {"ts": ts, "user": "UCANOPY", "text": text})
         return ts
 
     def update(self, channel, ts, text):
-        self.updates.append({"channel": channel, "ts": ts, "text": text})
+        sent = degrade_links(text) if self.escapes_on_edit else text
+        self.updates.append({"channel": channel, "ts": ts, "text": sent})
+        self.stored[self._key(channel, ts)] = (
+            LABELLED_LINK.sub(lambda m: "&lt;%s&gt;" % m.group(1), sent)
+            if self.cli_escapes_on_edit else sent)
         return ts
+
+    def message(self, channel, ts):
+        """As Slack stored it — not as canopy sent it. That gap is the point."""
+        text = self.stored.get(self._key(channel, ts))
+        return None if text is None else {"ts": ts, "user": "UCANOPY", "text": text}
 
     def react(self, channel, ts, emoji):
         self.reactions.append({"channel": channel, "ts": ts, "emoji": emoji})

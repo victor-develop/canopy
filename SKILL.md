@@ -151,10 +151,19 @@ use a build of upstream `main` at `6c0a885` or later, or
 
 Without the fix, `chat.update` stores `<url|label>` as `&lt;url|label&gt;`.
 Every checkpoint appended to a feed edits that message, so the feed's links all
-turn into literal text after the first checkpoint. Canopy does not crash on such
-a CLI — set `"slack_cli_escapes_on_edit": true` and it degrades labelled links
-to bare URLs, which stay clickable — but the labels are lost. With a fixed CLI,
-set it to `false` and keep them.
+turn into literal text after the first checkpoint.
+
+**Nobody has to know which CLI they have.** `slack_cli_escapes_on_edit` starts
+as `null`, and the first `track` answers it by experiment: it edits its own tree
+message once with the labelled links in it, reads back what Slack stored, and
+writes `true`/`false` into `config.json` (`ops._probe_edit_escaping`). Later
+tracks trust that answer. A version check would not do: a build of upstream
+`main` still calls itself `0.9.0`.
+
+When the answer is `true`, Canopy degrades labelled links to `label url` before
+every edit — clickable, just without the label — instead of posting a dead
+`&lt;…&gt;`. Set the value by hand to skip the probe; if the probe cannot read
+its own edit back it writes nothing and the degrading behaviour stands.
 
 ## Who wakes the tick — `schedule_backend`
 
