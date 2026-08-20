@@ -21,8 +21,9 @@ DEFAULTS = {
     "cron_login_shell": None,
     # Same reason as runner_path: cron's PATH has neither of these.
     "slack_cli": "slackcli",
-    # Upstream slackcli <= 0.8.0 escapes `<url|label>` on edit (it omits
-    # parse=none on chat.update). Set false once your slackcli carries that fix.
+    # Upstream slackcli through v0.9.0 escapes `<url|label>` on edit (it omits
+    # parse=none on chat.update; fixed upstream in #120, unreleased as of
+    # v0.9.0). Set false once your slackcli carries that fix.
     "slack_cli_escapes_on_edit": True,
     "slack_cli_path": None,
     "slack_workspace_url": None,

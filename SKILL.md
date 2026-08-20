@@ -137,22 +137,24 @@ Model choice inside a runner is that runner's own config (`~/.codex/config.toml`
 ## The Slack CLI it needs
 
 Canopy shells out to [`slackcli`](https://github.com/shaharia-lab/slackcli) for
-every Slack call. **Use 0.8.0-canopy.1 or later from
-[victor-develop/slackcli](https://github.com/victor-develop/slackcli/releases),
-or any upstream build that carries the `parse=none` fix**
-([upstream issue #106](https://github.com/shaharia-lab/slackcli/issues/106)).
+every Slack call. Both fixes Canopy needs are merged upstream:
+`parse=none` on `chat.update`
+([#120](https://github.com/shaharia-lab/slackcli/pull/120)) and a verified,
+race-free `slackcli update`
+([#119](https://github.com/shaharia-lab/slackcli/pull/119)).
 
-Upstream 0.8.0 calls `chat.update` without `parse=none`, so Slack escapes the
-text and `<url|label>` is stored as `&lt;url|label&gt;`. Every checkpoint
-appended to a feed edits that message, so on an unpatched CLI the feed's links
-all turn into literal text after the first checkpoint. Canopy does not crash on
-such a CLI — set `"slack_cli_escapes_on_edit": true` and it degrades labelled
-links to bare URLs, which stay clickable — but the labels are lost. With the
-fixed CLI, set it to `false` and keep them.
+Neither is in a release yet: **v0.9.0 and earlier do not carry `parse=none`**,
+so a version number alone does not tell you. Until the next upstream release,
+use a build of upstream `main` at `6c0a885` or later, or
+[victor-develop/slackcli](https://github.com/victor-develop/slackcli/releases)
+**0.8.0-canopy.1**. After that release, use it.
 
-The fork also carries the security hardening from `asdigitos/slackcli#1`
-(credential-bearing requests gated to slack.com hosts, terminal output
-sanitized, update downloads checksum-verified).
+Without the fix, `chat.update` stores `<url|label>` as `&lt;url|label&gt;`.
+Every checkpoint appended to a feed edits that message, so the feed's links all
+turn into literal text after the first checkpoint. Canopy does not crash on such
+a CLI — set `"slack_cli_escapes_on_edit": true` and it degrades labelled links
+to bare URLs, which stay clickable — but the labels are lost. With a fixed CLI,
+set it to `false` and keep them.
 
 ## Who wakes the tick — `schedule_backend`
 

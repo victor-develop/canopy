@@ -4,7 +4,7 @@ Two backends, same interface:
 
 - **slackcli** (default) shells out to the CLI that already holds the workspace
   credential, so Canopy never handles a token. One catch, found the hard way:
-  upstream slackcli (<= 0.8.0) omits `parse=none` on `chat.update`, so Slack
+  upstream slackcli (through v0.9.0) omits `parse=none` on `chat.update`, so Slack
   escapes the text and `<url|label>` is stored as `&lt;url|label&gt;` — a dead
   link. Since the feed is updated in place on every checkpoint, that breaks
   every link in it. With such a CLI, set `slack_cli_escapes_on_edit: true` and

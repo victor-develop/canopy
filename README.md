@@ -67,16 +67,24 @@ worker 就既发不出 Slack 也推不动自己的 `cursor`,而且不报错。�
 
 ## 依赖的 slackcli 版本
 
-所有 Slack 调用都走 [`slackcli`](https://github.com/shaharia-lab/slackcli)。
-请用 [victor-develop/slackcli](https://github.com/victor-develop/slackcli/releases)
-的 **0.8.0-canopy.1** 或更新版本,或任何带了 `parse=none` 修复的上游版本
-([上游 issue #106](https://github.com/shaharia-lab/slackcli/issues/106))。
+所有 Slack 调用都走 [`slackcli`](https://github.com/shaharia-lab/slackcli),
+用上游的就行 —— canopy 依赖的两个修复都已经合进上游 `main`:
 
-上游 0.8.0 调 `chat.update` 时没传 `parse=none`,Slack 会把文本转义,
+| 修复 | 上游 PR | 落在哪个版本 |
+|---|---|---|
+| `chat.update` 传 `parse=none`,编辑不再吃掉链接 | [#120](https://github.com/shaharia-lab/slackcli/pull/120) | v0.9.0 **之后**,第一个带它的 release 还没发 |
+| `slackcli update` 装之前校验 sha256 + 私有临时目录 | [#119](https://github.com/shaharia-lab/slackcli/pull/119) | 同上 |
+
+所以现在有两条路:上游 `main`(`6c0a885` 或更新)自己 build,或者继续用
+[victor-develop/slackcli](https://github.com/victor-develop/slackcli/releases)
+的 **0.8.0-canopy.1**。等上游发了下一个 release,直接用那个 release 就够了 ——
+**v0.9.0 及更早的版本不带 `parse=none`**,别按版本号大就以为有。
+
+为什么在意:上游 v0.9.0 调 `chat.update` 时没传 `parse=none`,Slack 会把文本转义,
 `<url|label>` 存成 `&lt;url|label&gt;`。feed 每追一条 checkpoint 就编辑一次那条
 消息,所以在没打补丁的 CLI 上,第一条 checkpoint 之后 feed 里的链接全变成字面文字。
 canopy 不会因此崩:把 `slack_cli_escapes_on_edit` 设成 `true`,它会把带标签的链接
-降级成裸 URL(还能点,但标签没了)。用修好的 CLI 就设成 `false`。
+降级成裸 URL(还能点,但标签没了)。用带修复的 CLI 就设成 `false`。
 
 ## 命令
 
