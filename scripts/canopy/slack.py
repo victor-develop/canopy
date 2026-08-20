@@ -38,6 +38,11 @@ def degrade_links(text):
     return LINK_RE.sub(lambda m: "%s %s" % (m.group(2).strip(), m.group(1)), text or "")
 
 
+def links_were_escaped(text):
+    """Did Slack store `<url|label>` as `&lt;url|label&gt;`? -> the dead link."""
+    return "&lt;" in (text or "")
+
+
 def _run(argv):
     from . import effects as effects_mod
     return effects_mod.DEFAULT.run(argv)
@@ -86,7 +91,10 @@ class Slack(object):
             kwargs["run"] = lambda argv: effects.run(argv)
         return cls(cli=cli, workspace=cfg.get("slack_workspace"),
                    backend=backend, token=token,
-                   escapes_on_edit=bool(cfg.get("slack_cli_escapes_on_edit", True)),
+                   # None = not probed yet. Assume it escapes: on a fixed CLI
+                   # that only costs the link labels, the other way round loses
+                   # every link in the feed, silently.
+                   escapes_on_edit=cfg.get("slack_cli_escapes_on_edit", True) is not False,
                    **kwargs)
 
     # -- plumbing ---------------------------------------------------------
@@ -121,7 +129,9 @@ class Slack(object):
         except ValueError:
             raise SlackError("slackcli did not return JSON: %s" % (payload[:200],))
         if isinstance(data, dict):
-            data = data.get("messages") or data.get("data") or []
+            single = data.get("message")
+            data = data.get("messages") or data.get("data") or \
+                ([single] if isinstance(single, dict) else [])
         out = []
         for item in data:
             if not isinstance(item, dict):
@@ -162,6 +172,17 @@ class Slack(object):
         return text
 
     # -- reads ------------------------------------------------------------
+
+    def message(self, channel, ts):
+        """One message, as Slack stored it. Used to read canopy's own edit back."""
+        if self.backend == "api":
+            data = self._api("conversations.history", channel=channel, latest=ts,
+                             oldest=ts, inclusive="true", limit=1)
+            msgs = self._messages(json.dumps(data.get("messages", [])))
+        else:
+            msgs = self._messages(self._call("conversations", "get", channel, ts,
+                                             "--json"))
+        return msgs[0] if msgs else None
 
     def thread(self, channel, thread_ts, oldest=None, limit=200):
         if self.backend == "api":

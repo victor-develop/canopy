@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from canopy import config as config_mod
-from canopy import cron, store
+from canopy import cron, ops, store
 from canopy.errors import SlackError
 from canopy.slack import Slack
 
@@ -303,3 +303,78 @@ def test_no_cron_line_when_something_else_owns_the_waking():
 def test_the_cron_backend_is_still_the_default():
     from canopy import config
     assert config.DEFAULTS["schedule_backend"] == "cron"
+
+
+# -- "does this slackcli break links when it edits?" — asked, not configured ---
+
+def track_a_thread(ctx, slack):
+    channel, ts = "C0PAY", "1699000001.000100"
+    slack.add(channel, ts, ts, "U1", "支付超时,大家看下")
+    return ops.track(ctx, "https://example.slack.com/archives/%s/p1699000001000100"
+                     % channel, owner="A君", namer=lambda *a, **k: "pay-timeout")
+
+
+def map_text(ctx, proj_id):
+    msg = ctx.tree(proj_id).data["tree_msgs"][0]
+    return ctx.slack.message(msg["channel"], msg["ts"])["text"]
+
+
+def test_track_asks_the_cli_instead_of_trusting_a_version_string(dh, ctx, slack):
+    """No version separates a patched slackcli from an unpatched one — a build
+    of upstream main still calls itself 0.9.0. So track edits its own tree
+    message and reads back what Slack actually stored."""
+    slack.cli_escapes_on_edit = True
+    result = track_a_thread(ctx, slack)
+
+    assert config_mod.load(dh)["slack_cli_escapes_on_edit"] is True
+    # And the tree message is left readable: the labelled links it could not
+    # keep are degraded to bare URLs, not left as `&lt;…&gt;`.
+    assert "&lt;" not in map_text(ctx, result["proj_id"])
+
+
+def test_a_fixed_cli_keeps_its_labels(dh, ctx, slack):
+    result = track_a_thread(ctx, slack)
+
+    assert config_mod.load(dh)["slack_cli_escapes_on_edit"] is False
+    assert "|智能摘要>" in map_text(ctx, result["proj_id"])
+
+
+def test_the_answer_is_written_once_and_then_trusted(dh, ctx, slack):
+    """The probe costs one extra edit per tree message. Paying it on every
+    track — or worse, every tick — is not worth it."""
+    track_a_thread(ctx, slack)
+    edits_after_first = len(slack.updates)
+
+    slack.add("C0EDD", "1699000500.000100", "1699000500.000100", "U1", "EDD 不准")
+    ops.track(ctx, "https://example.slack.com/archives/C0EDD/p1699000500000100",
+              namer=lambda *a, **k: "edd")
+    second = [u for u in slack.updates[edits_after_first:]]
+    assert config_mod.load(dh)["slack_cli_escapes_on_edit"] is False
+    # The second track re-syncs its own map, but never the probe's extra pass.
+    assert len(second) <= 2
+
+
+def test_a_setting_written_by_hand_is_not_overwritten(dh, ctx, slack):
+    config_mod.set_values(dh, slack_cli_escapes_on_edit=True)
+    ctx.cfg["slack_cli_escapes_on_edit"] = True
+    ctx.slack.escapes_on_edit = True
+    result = track_a_thread(ctx, slack)
+
+    assert config_mod.load(dh)["slack_cli_escapes_on_edit"] is True
+    assert "|智能摘要>" not in map_text(ctx, result["proj_id"])
+
+
+def test_an_unreadable_probe_leaves_the_conservative_setting(dh, ctx, slack):
+    """If canopy cannot read its own edit back it does not get to guess: the
+    setting stays unanswered and the links stay degraded."""
+    def blind(channel, ts):
+        raise SlackError("slackcli did not return JSON")
+
+    slack.message = blind
+    result = track_a_thread(ctx, slack)
+
+    assert config_mod.load(dh)["slack_cli_escapes_on_edit"] is None
+    # Unanswered means "assume it escapes", so the last edit degrades the links
+    # rather than betting the feed on an unread probe.
+    map_ts = ctx.tree(result["proj_id"]).data["tree_msgs"][0]["ts"]
+    assert "|智能摘要>" not in slack.text_of(map_ts)

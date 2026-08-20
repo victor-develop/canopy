@@ -22,9 +22,12 @@ DEFAULTS = {
     # Same reason as runner_path: cron's PATH has neither of these.
     "slack_cli": "slackcli",
     # Upstream slackcli through v0.9.0 escapes `<url|label>` on edit (it omits
-    # parse=none on chat.update; fixed upstream in #120, unreleased as of
-    # v0.9.0). Set false once your slackcli carries that fix.
-    "slack_cli_escapes_on_edit": True,
+    # parse=none on chat.update; fixed upstream in #120). null means "not asked
+    # yet": `track` edits its own tree message once and reads back what Slack
+    # stored, then writes true/false here. No version string can answer this —
+    # a build of upstream main still calls itself 0.9.0. Set it by hand to
+    # override.
+    "slack_cli_escapes_on_edit": None,
     "slack_cli_path": None,
     "slack_workspace_url": None,
     "slack_backend": "slackcli",   # or "api", which needs $slack_token_env
